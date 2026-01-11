@@ -6,4 +6,4 @@
 
 ### Added
 
-- Experimental release
+- Experimental release (Not all features are implemented yet)
