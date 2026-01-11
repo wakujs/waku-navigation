@@ -29,3 +29,7 @@ if ((globalThis as any).__WAKU_HYDRATE__) {
   createRoot(document as any).render(rootElement);
 }
 ```
+
+## Examples
+
+- https://stackblitz.com/github/wakujs/waku-navigation/tree/main/examples/01_minimal

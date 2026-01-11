@@ -12,8 +12,8 @@
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-server-dom-webpack": "^19.2.3",
-    "waku": "^1.0.0-alpha.1",
-    "waku-navigation": "^0.0.0"
+    "waku": "https://pkg.pr.new/wakujs/waku@fc78f84",
+    "waku-navigation": "^0.0.1"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",
