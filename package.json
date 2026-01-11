@@ -1,0 +1,74 @@
+{
+  "name": "waku-navigation",
+  "description": "Waku Router implementation with Navigation API",
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "author": "Daishi Kato",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wakujs/waku-navigation.git"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "compile": "rm -rf dist && tsc -p .",
+    "test": "pnpm run '/^test:.*/'",
+    "test:format": "prettier -c .",
+    "test:lint": "eslint .",
+    "test:types": "tsc -p . --noEmit",
+    "test:types:examples": "tsc -p examples --noEmit",
+    "test:spec": "vitest run",
+    "examples:01_minimal": "(cd examples/01_minimal; waku dev)"
+  },
+  "keywords": [
+    "react",
+    "waku",
+    "navigation"
+  ],
+  "license": "MIT",
+  "prettier": {
+    "singleQuote": true
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.1",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/dom-navigation": "^1.0.6",
+    "@types/node": "^25.0.6",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.2",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "happy-dom": "^20.1.0",
+    "prettier": "^3.7.4",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-server-dom-webpack": "^19.2.3",
+    "ts-expect": "^1.3.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.52.0",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.16",
+    "waku": "https://pkg.pr.new/wakujs/waku@fc78f84",
+    "waku-navigation": "link:"
+  },
+  "peerDependencies": {
+    "react": ">=19.0.0",
+    "waku": ">=1.0.0-alpha.1"
+  }
+}
