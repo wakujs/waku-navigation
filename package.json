@@ -64,11 +64,11 @@
     "typescript-eslint": "^8.52.0",
     "vite": "^7.3.1",
     "vitest": "^4.0.16",
-    "waku": "https://pkg.pr.new/wakujs/waku@fc78f84",
+    "waku": "1.0.0-alpha.2",
     "waku-navigation": "link:"
   },
   "peerDependencies": {
     "react": ">=19.0.0",
-    "waku": ">=1.0.0-alpha.1"
+    "waku": ">=1.0.0-alpha.2"
   }
 }
