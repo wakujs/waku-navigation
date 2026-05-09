@@ -8,7 +8,7 @@ import type { getConfig as File_Index_getConfig } from './pages/index';
 
 // prettier-ignore
 type Page =
-| { path: '/about'; render: 'dynamic' }
+| { path: '/about'; render: 'static' }
 | ({ path: '/' } & GetConfigResponse<typeof File_Index_getConfig>);
 
 // prettier-ignore
