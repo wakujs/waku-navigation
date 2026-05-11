@@ -1,108 +1,155 @@
-import { expect } from '@playwright/test';
-import { prepareNormalSetup, test, waitForHydration } from './utils.js';
+import { expect, test, type Page } from '@playwright/test';
 
-const startApp = prepareNormalSetup('01_minimal');
+async function waitForHydration(page: Page) {
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForFunction(
+    () =>
+      Object.getOwnPropertyNames(document.body).some((k) =>
+        k.startsWith('__reactFiber'),
+      ),
+    null,
+    { timeout: 60_000 },
+  );
+}
 
-test.describe('01_minimal', () => {
-  let port: number;
-  let stopApp: () => Promise<void>;
+test('SSR home page', async ({ page }) => {
+  const response = await page.goto('/');
+  expect(response?.status()).toBe(200);
+  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+  await expect(page.locator('a', { hasText: 'Home' })).toHaveAttribute(
+    'href',
+    '/',
+  );
+  await expect(page.locator('a', { hasText: 'About' })).toHaveAttribute(
+    'href',
+    '/about',
+  );
+});
 
-  test.beforeAll(async ({ mode }) => {
-    ({ port, stopApp } = await startApp(mode));
+test('SSR about page', async ({ page }) => {
+  const response = await page.goto('/about');
+  expect(response?.status()).toBe(200);
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+});
+
+test('hydrates and exposes Navigation API', async ({ page }) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  const result = await page.evaluate(() => ({
+    hydrated: (globalThis as Record<string, unknown>).__WAKU_HYDRATE__,
+    hasNavigation: typeof window.navigation !== 'undefined',
+    currentPath: new URL(window.navigation!.currentEntry!.url!).pathname,
+  }));
+  expect(result).toEqual({
+    hydrated: true,
+    hasNavigation: true,
+    currentPath: '/',
+  });
+});
+
+test('client-side navigation home ↔ about preserves window state', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  // Sentinel survives only if no full reload occurred.
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__sentinel = Date.now();
   });
 
-  test.afterAll(async () => {
-    await stopApp();
+  await page.locator('a', { hasText: 'About' }).click();
+  await expect(page).toHaveURL('/about');
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__sentinel,
+    ),
+  ).toBeTruthy();
+
+  await page.locator('a', { hasText: 'Home' }).click();
+  await expect(page).toHaveURL('/');
+  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__sentinel,
+    ),
+  ).toBeTruthy();
+});
+
+test('browser back / forward navigates client-side', async ({ page }) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__sentinel = Date.now();
   });
 
-  test('SSR home page', async ({ page }) => {
-    const response = await page.goto(`http://localhost:${port}/`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
-    await expect(page.locator('a', { hasText: 'Home' })).toHaveAttribute(
-      'href',
-      '/',
-    );
-    await expect(page.locator('a', { hasText: 'About' })).toHaveAttribute(
-      'href',
-      '/about',
-    );
+  await page.locator('a', { hasText: 'About' }).click();
+  await expect(page).toHaveURL('/about');
+
+  await page.goBack();
+  await expect(page).toHaveURL('/');
+  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+
+  await page.goForward();
+  await expect(page).toHaveURL('/about');
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__sentinel,
+    ),
+  ).toBeTruthy();
+});
+
+test('external-nav guard: hash-only navigation does not trigger an RSC refetch', async ({
+  page,
+}) => {
+  const rscRequests: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/RSC/')) rscRequests.push(req.url());
   });
 
-  test('SSR about page', async ({ page }) => {
-    const response = await page.goto(`http://localhost:${port}/about`);
-    expect(response?.status()).toBe(200);
-    await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+  await page.goto('/');
+  await waitForHydration(page);
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__sentinel = Date.now();
   });
 
-  test('hydrates and exposes Navigation API', async ({ page }) => {
-    await page.goto(`http://localhost:${port}/`);
-    await waitForHydration(page);
-    const result = await page.evaluate(() => ({
-      hydrated: (globalThis as Record<string, unknown>).__WAKU_HYDRATE__,
-      hasNavigation: typeof window.navigation !== 'undefined',
-      currentUrl: window.navigation?.currentEntry?.url,
-    }));
-    expect(result.hydrated).toBe(true);
-    expect(result.hasNavigation).toBe(true);
-    expect(result.currentUrl).toBe(`http://localhost:${port}/`);
-  });
+  const before = rscRequests.length;
+  await page.evaluate(() => window.navigation.navigate('#section').finished);
+  await page.waitForTimeout(200);
 
-  test('client-side navigation home → about → home preserves window state', async ({
-    page,
-  }) => {
-    await page.goto(`http://localhost:${port}/`);
-    await waitForHydration(page);
-    // Sentinel survives only if no full reload occurred.
-    await page.evaluate(() => {
-      (window as unknown as Record<string, unknown>).__sentinel = Date.now();
+  expect(rscRequests.length).toBe(before);
+  await expect(page).toHaveURL('/#section');
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__sentinel,
+    ),
+  ).toBeTruthy();
+  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+});
+
+test('external-nav guard: cross-origin link does not trigger intercept', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+
+  // navigation.navigate() to a cross-origin URL fires a `navigate` event with
+  // canIntercept=false; our guard returns early. We cancel synchronously here
+  // so the browser never actually leaves the page.
+  const observed = await page.evaluate(() => {
+    return new Promise<{ canIntercept: boolean }>((resolve) => {
+      const listener = (event: NavigateEvent) => {
+        window.navigation.removeEventListener('navigate', listener);
+        event.preventDefault();
+        resolve({ canIntercept: event.canIntercept });
+      };
+      window.navigation.addEventListener('navigate', listener);
+      window.navigation
+        .navigate('https://example.invalid/')
+        .finished.catch(() => {});
     });
-
-    await page.locator('a', { hasText: 'About' }).click();
-    await expect(page).toHaveURL(`http://localhost:${port}/about`);
-    await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
-    expect(
-      await page.evaluate(
-        () => (window as unknown as Record<string, unknown>).__sentinel,
-      ),
-    ).toBeTruthy();
-
-    await page.locator('a', { hasText: 'Home' }).click();
-    await expect(page).toHaveURL(`http://localhost:${port}/`);
-    await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
-    expect(
-      await page.evaluate(
-        () => (window as unknown as Record<string, unknown>).__sentinel,
-      ),
-    ).toBeTruthy();
   });
-
-  test('browser back / forward navigates client-side', async ({ page }) => {
-    await page.goto(`http://localhost:${port}/`);
-    await waitForHydration(page);
-    await page.evaluate(() => {
-      (window as unknown as Record<string, unknown>).__sentinel = Date.now();
-    });
-
-    await page.locator('a', { hasText: 'About' }).click();
-    await expect(page).toHaveURL(`http://localhost:${port}/about`);
-
-    await page.goBack();
-    await expect(page).toHaveURL(`http://localhost:${port}/`);
-    await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
-    expect(
-      await page.evaluate(
-        () => (window as unknown as Record<string, unknown>).__sentinel,
-      ),
-    ).toBeTruthy();
-
-    await page.goForward();
-    await expect(page).toHaveURL(`http://localhost:${port}/about`);
-    await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
-    expect(
-      await page.evaluate(
-        () => (window as unknown as Record<string, unknown>).__sentinel,
-      ),
-    ).toBeTruthy();
-  });
+  expect(observed.canIntercept).toBe(false);
 });

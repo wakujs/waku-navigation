@@ -30,8 +30,6 @@
     "test:types:e2e": "tsc -p tsconfig.e2e.json",
     "test:spec": "vitest run",
     "e2e": "playwright test",
-    "e2e-dev": "playwright test --project=chromium-dev",
-    "e2e-prd": "playwright test --project=chromium-prd",
     "examples:01_minimal": "(cd examples/01_minimal; waku dev)"
   },
   "keywords": [
