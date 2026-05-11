@@ -153,3 +153,38 @@ test('external-nav guard: cross-origin link does not trigger intercept', async (
   });
   expect(observed.canIntercept).toBe(false);
 });
+
+test('SSR 404: unknown route returns 404 with the 404 page', async ({
+  page,
+}) => {
+  const response = await page.goto('/nonexistent');
+  expect(response?.status()).toBe(404);
+  await expect(page.locator('h1')).toHaveText('Not Found');
+});
+
+test('client-side 404: navigating to an unknown route renders the 404 page', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__sentinel = Date.now();
+  });
+
+  await page.evaluate(
+    () => window.navigation.navigate('/nonexistent').finished,
+  );
+  await expect(page).toHaveURL('/nonexistent');
+  await expect(page.locator('h1')).toHaveText('Not Found');
+  // No full reload.
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__sentinel,
+    ),
+  ).toBeTruthy();
+
+  // And we can navigate back to a real route.
+  await page.locator('a', { hasText: 'Home' }).click();
+  await expect(page).toHaveURL('/');
+  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+});

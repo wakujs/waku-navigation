@@ -4,33 +4,46 @@
 
 import { useEffect, useState } from 'react';
 import { Root, Slot, useRefetch } from 'waku/minimal/client';
-import type { Unstable_RouteProps as RouteProps } from 'waku/router/client';
 import {
   unstable_encodeRoutePath as encodeRoutePath,
+  unstable_getErrorInfo as getErrorInfo,
   unstable_getHttpStatusFromMeta as getHttpStatusFromMeta,
   unstable_parseRoute as parseRoute,
   unstable_getRouteSlotId as getRouteSlotId,
 } from 'waku/router/client';
 
+const NOT_FOUND_PATH = '/404';
+
 function InnerRouter({
-  initialRoute,
+  initialRoutePath,
   httpStatus,
 }: {
-  initialRoute: RouteProps;
+  initialRoutePath: string;
   httpStatus: string | undefined;
 }) {
   const refetch = useRefetch();
-  const [routePath, setRoutePath] = useState(initialRoute.path);
+  const [routePath, setRoutePath] = useState(initialRoutePath);
   useEffect(() => {
     const callback = (event: NavigateEvent) => {
       if (!event.canIntercept) return;
       if (event.hashChange || event.downloadRequest !== null || event.formData)
         return;
-      event.intercept();
       const route = parseRoute(new URL(event.destination.url));
-      const rscPath = encodeRoutePath(route.path);
-      refetch(rscPath);
-      setRoutePath(route.path);
+      event.intercept({
+        handler: async () => {
+          try {
+            await refetch(encodeRoutePath(route.path));
+            setRoutePath(route.path);
+          } catch (err) {
+            if (getErrorInfo(err)?.status === 404) {
+              await refetch(encodeRoutePath(NOT_FOUND_PATH));
+              setRoutePath(NOT_FOUND_PATH);
+              return;
+            }
+            throw err;
+          }
+        },
+      });
     };
     window.navigation.addEventListener('navigate', callback);
     return () => {
@@ -46,13 +59,17 @@ function InnerRouter({
 }
 
 export function Router() {
-  const initialRoute = parseRoute(
-    new URL(window.navigation.currentEntry!.url!),
-  );
   const httpStatus = getHttpStatusFromMeta();
+  const initialRoutePath =
+    httpStatus === '404'
+      ? NOT_FOUND_PATH
+      : parseRoute(new URL(window.navigation.currentEntry!.url!)).path;
   return (
-    <Root initialRscPath={encodeRoutePath(initialRoute.path)}>
-      <InnerRouter initialRoute={initialRoute} httpStatus={httpStatus} />
+    <Root initialRscPath={encodeRoutePath(initialRoutePath)}>
+      <InnerRouter
+        initialRoutePath={initialRoutePath}
+        httpStatus={httpStatus}
+      />
     </Root>
   );
 }
@@ -61,7 +78,6 @@ export function Router() {
 // TODO: caching with state?
 // TODO: query & hash support
 // TODO: slice support (upstream)
-// TODO: 404 page
 // TODO: error handling
 // TODO: pending
 // TODO: prefetching
