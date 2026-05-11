@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "types": ["node", "dom-navigation"]
+  },
+  "include": ["playwright.config.ts", "./e2e/*.ts"]
+}

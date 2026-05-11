@@ -27,7 +27,11 @@
     "test:lint": "eslint .",
     "test:types": "tsc -p . --noEmit",
     "test:types:examples": "tsc -p examples --noEmit",
+    "test:types:e2e": "tsc -p tsconfig.e2e.json",
     "test:spec": "vitest run",
+    "e2e": "playwright test",
+    "e2e-dev": "playwright test --project=chromium-dev",
+    "e2e-prd": "playwright test --project=chromium-prd",
     "examples:01_minimal": "(cd examples/01_minimal; waku dev)"
   },
   "keywords": [
@@ -41,6 +45,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.1",
     "@testing-library/user-event": "^14.6.1",

@@ -23,7 +23,9 @@ function InnerRouter({
   const [routePath, setRoutePath] = useState(initialRoute.path);
   useEffect(() => {
     const callback = (event: NavigateEvent) => {
-      // TODO: check if it's an external navigation
+      if (!event.canIntercept) return;
+      if (event.hashChange || event.downloadRequest !== null || event.formData)
+        return;
       event.intercept();
       const route = parseRoute(new URL(event.destination.url));
       const rscPath = encodeRoutePath(route.path);
