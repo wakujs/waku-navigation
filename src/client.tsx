@@ -175,6 +175,9 @@ export function Router() {
 // TODO: caching with state?
 // TODO: query & hash support
 // TODO: slice support (upstream)
-// TODO: error handling
+// TODO: error handling (non-404 refetch failures currently rethrow uncaught)
 // TODO: prefetching
+// TODO: <Pending> for non-click navigations (browser back/forward, programmatic
+//       navigate()) -- currently no source element, so no <Pending> lights up
+// TODO: e2e coverage for the downloadRequest and formData guard branches
 // TODO: and more?
