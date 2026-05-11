@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
+test.use({ baseURL: `http://localhost:${process.env.E2E_PORT_01_MINIMAL}` });
+
 async function waitForHydration(page: Page) {
   await page.waitForLoadState('domcontentloaded');
   await page.waitForFunction(
