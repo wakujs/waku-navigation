@@ -156,6 +156,53 @@ test('external-nav guard: cross-origin link does not trigger intercept', async (
   expect(observed.canIntercept).toBe(false);
 });
 
+test('static routes skip the refetch on revisit', async ({ page }) => {
+  const rscRequests: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/RSC/')) rscRequests.push(req.url());
+  });
+  await page.goto('/');
+  await waitForHydration(page);
+
+  // First click: /about isn't cached client-side yet, expect a refetch.
+  await page.locator('a', { hasText: 'About' }).click();
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+  await page.waitForTimeout(100);
+  expect(rscRequests.length).toBeGreaterThan(0);
+
+  // Second click: / was marked IS_STATIC by the initial SSR payload, so the
+  // router should NOT refetch -- the element is still in Waku's store.
+  const before = rscRequests.length;
+  await page.locator('a', { hasText: 'Home' }).click();
+  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+  await page.waitForTimeout(100);
+  expect(rscRequests.length).toBe(before);
+});
+
+test('refetch sends X-Waku-Router-Skip listing cached element ids', async ({
+  page,
+}) => {
+  const skipHeaders: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/RSC/')) {
+      const h = req.headers()['x-waku-router-skip'];
+      if (h !== undefined) skipHeaders.push(h);
+    }
+  });
+  await page.goto('/');
+  await waitForHydration(page);
+  await page.locator('a', { hasText: 'About' }).click();
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+  await page.waitForTimeout(100);
+
+  expect(skipHeaders.length).toBeGreaterThan(0);
+  // The header should be a JSON array of slot ids; not just "[]" (we had
+  // initial elements from SSR before this navigation).
+  const parsed = JSON.parse(skipHeaders[0]!);
+  expect(Array.isArray(parsed)).toBe(true);
+  expect(parsed.length).toBeGreaterThan(0);
+});
+
 test('SSR 404: unknown route returns 404 with the 404 page', async ({
   page,
 }) => {

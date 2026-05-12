@@ -19,14 +19,25 @@ import {
   type ReactNode,
   type TransitionStartFunction,
 } from 'react';
-import { Root, Slot, useRefetch } from 'waku/minimal/client';
+import {
+  Root,
+  Slot,
+  unstable_withEnhanceFetchFn as withEnhanceFetchFn,
+  useElementsPromise_UNSTABLE as useElementsPromise,
+  useRefetch,
+} from 'waku/minimal/client';
 import {
   unstable_encodeRoutePath as encodeRoutePath,
   unstable_getErrorInfo as getErrorInfo,
   unstable_getHttpStatusFromMeta as getHttpStatusFromMeta,
   unstable_parseRoute as parseRoute,
   unstable_getRouteSlotId as getRouteSlotId,
+  unstable_IS_STATIC_ID as IS_STATIC_ID,
+  unstable_ROUTE_ID as ROUTE_ID,
+  unstable_SKIP_HEADER as SKIP_HEADER,
 } from 'waku/router/client';
+
+type Elements = Record<string, unknown>;
 
 const NOT_FOUND_PATH = '/404';
 const PENDING_ATTR = 'data-waku-pending';
@@ -87,6 +98,33 @@ function InnerRouter({
   const refetch = useRefetch();
   const [routePath, setRoutePath] = useState(initialRoutePath);
   const registryRef = useRef(new Map<string, TransitionStartFunction>());
+  // Paths whose response was marked IS_STATIC: subsequent navigations to
+  // them skip refetch entirely. Slot ids the server has already given us;
+  // sent back via SKIP_HEADER so the server can omit them on the next fetch.
+  const staticPathSetRef = useRef(new Set<string>());
+  const cachedIdSetRef = useRef(new Set<string>());
+  // Track caches off the elements promise (which Waku populates from the
+  // initial SSR payload and from every refetch). Doing it from a useEffect
+  // lets us pick up the initial elements too, not just the ones we refetch.
+  const elementsPromise = useElementsPromise();
+  useEffect(() => {
+    elementsPromise.then(
+      (elements: Elements) => {
+        const routeData = elements[ROUTE_ID] as
+          | [path: string, query: string]
+          | undefined;
+        if (routeData && elements[IS_STATIC_ID]) {
+          staticPathSetRef.current.add(routeData[0]);
+        }
+        cachedIdSetRef.current = new Set(
+          Object.keys(elements).filter(
+            (k) => !k.startsWith('_') && k !== ROUTE_ID && k !== IS_STATIC_ID,
+          ),
+        );
+      },
+      () => {},
+    );
+  }, [elementsPromise]);
   const register = useCallback<RegisterFn>((id, st) => {
     registryRef.current.set(id, st);
     return () => {
@@ -100,9 +138,6 @@ function InnerRouter({
         return;
       const route = parseRoute(new URL(event.destination.url));
       const signal = event.signal;
-      // event.sourceElement is the element that triggered the navigation (the
-      // clicked <a>, if any). It's part of the spec but missing from
-      // @types/dom-navigation@1.0.6, hence the cast.
       const source = (event as NavigateEvent & { sourceElement?: Element })
         .sourceElement;
       const id =
@@ -111,6 +146,13 @@ function InnerRouter({
       const registered = id ? registryRef.current.get(id) : undefined;
       const startTransition: TransitionStartFunction =
         registered ?? ((fn) => fn());
+      const enhanceFetchWithSkip = withEnhanceFetchFn(
+        (fetchFn) => (input, init) => {
+          const headers = new Headers(init?.headers);
+          headers.set(SKIP_HEADER, JSON.stringify([...cachedIdSetRef.current]));
+          return fetchFn(input, { ...init, headers });
+        },
+      );
       event.intercept({
         handler: () =>
           new Promise<void>((resolve, reject) => {
@@ -118,13 +160,27 @@ function InnerRouter({
               try {
                 let targetPath: string;
                 try {
-                  await refetch(encodeRoutePath(route.path));
+                  // Already-loaded static route -- no network round-trip, the
+                  // element is still in the store.
+                  if (!staticPathSetRef.current.has(route.path)) {
+                    await refetch(
+                      encodeRoutePath(route.path),
+                      undefined,
+                      enhanceFetchWithSkip,
+                    );
+                  }
                   if (signal.aborted) return resolve();
                   targetPath = route.path;
                 } catch (err) {
                   if (signal.aborted) return resolve();
                   if (getErrorInfo(err)?.status === 404) {
-                    await refetch(encodeRoutePath(NOT_FOUND_PATH));
+                    if (!staticPathSetRef.current.has(NOT_FOUND_PATH)) {
+                      await refetch(
+                        encodeRoutePath(NOT_FOUND_PATH),
+                        undefined,
+                        enhanceFetchWithSkip,
+                      );
+                    }
                     if (signal.aborted) return resolve();
                     targetPath = NOT_FOUND_PATH;
                   } else {
@@ -171,12 +227,11 @@ export function Router() {
   );
 }
 
-// TODO: caching and static handling
-// TODO: caching with state?
 // TODO: query & hash support
-// TODO: slice support (upstream)
+// TODO: slice support (upstream) -- including the IS_STATIC:<slotId> marker
 // TODO: error handling (non-404 refetch failures currently rethrow uncaught)
 // TODO: prefetching
+// TODO: HMR cache invalidation (clear staticPathSet/cachedIdSet on hot reload)
 // TODO: <Pending> for non-click navigations (browser back/forward, programmatic
 //       navigate()) -- currently no source element, so no <Pending> lights up
 // TODO: e2e coverage for the downloadRequest and formData guard branches
