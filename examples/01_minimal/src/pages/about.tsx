@@ -5,6 +5,7 @@ export default function AboutPage() {
     <>
       <h1>Welcome to the About Page</h1>
       <Slice id="clock" />
+      <div style={{ height: '2000px' }} />
     </>
   );
 }

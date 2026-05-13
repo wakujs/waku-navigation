@@ -308,6 +308,24 @@ test('useRouter().prefetch warms the RSC cache so subsequent navigation skips th
   expect(aboutRscUrls.length).toBe(1);
 });
 
+test('useRouter().push with scroll: false preserves the current scroll position', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  // Scroll down on the home page (which has a 2000px spacer to make this possible).
+  await page.evaluate(() => window.scrollTo(0, 500));
+  expect(await page.evaluate(() => window.scrollY)).toBe(500);
+
+  // push('/about', { scroll: false }) -- after the navigation completes, the
+  // scroll position should be unchanged. With default scroll behavior the
+  // browser would scroll to top.
+  await page.getByTestId('push-no-scroll').click();
+  await expect(page).toHaveURL('/about');
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+  expect(await page.evaluate(() => window.scrollY)).toBe(500);
+});
+
 test('SSR 404: unknown route returns 404 with the 404 page', async ({
   page,
 }) => {

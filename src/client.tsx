@@ -80,8 +80,14 @@ const PendingRegistryContext = createContext<{ register: RegisterFn }>({
 // across can swap the import path. push/replace/reload/back/forward are thin
 // wrappers over window.navigation; route info and prefetch come from context.
 //
-// Not yet implemented (vs waku/router/client): `unstable_events` and the
-// `scroll` option on push/replace.
+// The `scroll` option on push/replace is forwarded to the navigate event via
+// the Navigation API's `info` channel (not persisted in history). When
+// scroll: false, the navigate handler intercepts with scroll: 'manual' and
+// skips event.scroll(); otherwise the browser's default after-transition
+// scroll behavior applies.
+//
+// Not yet implemented (vs waku/router/client): `unstable_events`.
+type PushReplaceOptions = { scroll?: boolean };
 export function useRouter() {
   const ctx = useContext(RouterContext);
   const route: Route = ctx?.route ?? { path: '/', query: '', hash: '' };
@@ -89,10 +95,16 @@ export function useRouter() {
     path: route.path,
     query: route.query,
     hash: route.hash,
-    push: (to: string) =>
-      window.navigation.navigate(to, { history: 'push' }).finished,
-    replace: (to: string) =>
-      window.navigation.navigate(to, { history: 'replace' }).finished,
+    push: (to: string, options?: PushReplaceOptions) =>
+      window.navigation.navigate(to, {
+        history: 'push',
+        info: { scroll: options?.scroll },
+      }).finished,
+    replace: (to: string, options?: PushReplaceOptions) =>
+      window.navigation.navigate(to, {
+        history: 'replace',
+        info: { scroll: options?.scroll },
+      }).finished,
     reload: () => window.navigation.reload().finished,
     back: () => {
       window.navigation.back();
@@ -248,10 +260,26 @@ function InnerRouter({
       if (!event.canIntercept) return;
       if (event.downloadRequest !== null || event.formData) return;
       const nextRoute = parseRoute(new URL(event.destination.url));
-      // Hash-only navigations: don't intercept (the browser handles URL + scroll
-      // natively), but DO sync state so useRouter().hash stays current.
+      // useRouter().push/replace forward { scroll } via `info`. The Navigation
+      // API itself doesn't persist `info` in history, so it only applies to
+      // this single navigation -- exactly what we want.
+      const info = event.info as { scroll?: boolean } | undefined;
+      const suppressScroll = info?.scroll === false;
+      // Hash-only navigations: by default we don't intercept (the browser
+      // handles URL + scroll natively), but if the caller explicitly asked
+      // to suppress scrolling we still need to intercept so we can pass
+      // scroll: 'manual' and skip the browser's anchor scroll.
       if (event.hashChange) {
-        setRoute(nextRoute);
+        if (suppressScroll) {
+          event.intercept({
+            scroll: 'manual',
+            handler: async () => {
+              setRoute(nextRoute);
+            },
+          });
+        } else {
+          setRoute(nextRoute);
+        }
         return;
       }
       const signal = event.signal;
@@ -264,6 +292,7 @@ function InnerRouter({
       const startTransition: TransitionStartFunction =
         registered ?? ((fn) => fn());
       event.intercept({
+        ...(suppressScroll ? { scroll: 'manual' as const } : {}),
         handler: () =>
           new Promise<void>((resolve, reject) => {
             startTransition(async () => {
@@ -352,7 +381,6 @@ export function Router() {
   );
 }
 
-// TODO: scroll option on useRouter().push/replace
 // TODO: route-change event subscriber (useRouter().unstable_events)
 // TODO: HMR cache invalidation (clear staticPathSet/cachedIdSet on hot reload)
 // TODO: <Pending> for non-click navigations (browser back/forward, programmatic
