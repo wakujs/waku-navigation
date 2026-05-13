@@ -249,6 +249,40 @@ test('<Slice> renders a server-defined slice inside a page', async ({
   expect(match).not.toBeNull();
 });
 
+test('non-404 refetch failure propagates to the user ErrorBoundary', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  // Force the next /RSC/* fetch to reject with a non-404 error. The Router's
+  // catch path should setRenderError(err) and rethrow during render so the
+  // example's ErrorBoundary catches it.
+  await page.evaluate(() => {
+    const origFetch = window.fetch;
+    let used = false;
+    window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (!used && url.includes('/RSC/')) {
+        used = true;
+        return Promise.reject(new Error('Forced network failure'));
+      }
+      return origFetch.call(window, input, init);
+    } as typeof fetch;
+  });
+
+  // /about isn't in our static set yet, so this triggers a refetch -> fails.
+  await page.locator('a', { hasText: 'About' }).click();
+  await expect(page.getByTestId('error-fallback')).toBeVisible();
+  await expect(page.getByTestId('error-fallback')).toContainText(
+    'Forced network failure',
+  );
+});
+
 test('SSR 404: unknown route returns 404 with the 404 page', async ({
   page,
 }) => {

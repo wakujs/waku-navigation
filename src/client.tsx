@@ -145,6 +145,11 @@ function InnerRouter({
     ...initialRoute,
     hash: '',
   }));
+  // Non-404 refetch failures (network errors, server 500s, etc.) get surfaced
+  // by rethrowing during render so the user's <ErrorBoundary> can catch them.
+  // The state clears on the next successful navigation.
+  const [renderError, setRenderError] = useState<unknown>(null);
+  if (renderError) throw renderError;
   useEffect(() => {
     if (initialRoute.hash) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -240,9 +245,11 @@ function InnerRouter({
                     if (signal.aborted) return resolve();
                     targetRoute = { path: NOT_FOUND_PATH, query: '', hash: '' };
                   } else {
+                    setRenderError(err);
                     throw err;
                   }
                 }
+                setRenderError(null);
                 setRoute(targetRoute);
                 resolve();
               } catch (err) {
@@ -299,7 +306,6 @@ export function Router() {
   );
 }
 
-// TODO: error handling (non-404 refetch failures currently rethrow uncaught)
 // TODO: prefetching (also adds useRouter().prefetch)
 // TODO: scroll option on useRouter().push/replace
 // TODO: route-change event subscriber (useRouter().unstable_events)

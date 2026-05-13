@@ -1,10 +1,13 @@
 import { StrictMode } from 'react';
 import { createRoot, hydrateRoot } from 'react-dom/client';
 import { Router } from 'waku-navigation';
+import { ErrorBoundary } from './components/error-boundary.js';
 
 const rootElement = (
   <StrictMode>
-    <Router />
+    <ErrorBoundary>
+      <Router />
+    </ErrorBoundary>
   </StrictMode>
 );
 
