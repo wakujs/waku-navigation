@@ -326,6 +326,129 @@ test('useRouter().push with scroll: false preserves the current scroll position'
   expect(await page.evaluate(() => window.scrollY)).toBe(500);
 });
 
+test('useRouter().unstable_events emits start and complete on route change', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('event-log')).toHaveText('');
+
+  await page.locator('a', { hasText: 'About' }).click();
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+  await expect(page.getByTestId('event-log')).toHaveText(
+    'start:/about|complete:/about',
+  );
+
+  await page.locator('a', { hasText: 'Home' }).click();
+  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+  await expect(page.getByTestId('event-log')).toHaveText(
+    'start:/about|complete:/about|start:/|complete:/',
+  );
+});
+
+test('HMR reload listener clears the static cache and refetches the current route', async ({
+  page,
+}) => {
+  const homeRscUrls: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/RSC/R/_root')) homeRscUrls.push(req.url());
+  });
+  await page.goto('/');
+  await waitForHydration(page);
+
+  // Confirm our HMR listener is registered.
+  const listenerCount = await page.evaluate(
+    () =>
+      (
+        globalThis as {
+          __WAKU_RSC_RELOAD_LISTENERS__?: Array<() => void>;
+        }
+      ).__WAKU_RSC_RELOAD_LISTENERS__?.length ?? 0,
+  );
+  expect(listenerCount).toBeGreaterThan(0);
+
+  // Sanity: a same-route revisit doesn't refetch (/ is static after SSR).
+  const before = homeRscUrls.length;
+  await page.locator('a', { hasText: 'About' }).click();
+  await page.locator('a', { hasText: 'Home' }).click();
+  await page.waitForTimeout(100);
+  expect(homeRscUrls.length).toBe(before);
+
+  // Simulate Waku's dev runtime firing the HMR reload callbacks: cache
+  // should be cleared and a new RSC request issued for the current route.
+  await page.evaluate(() => {
+    for (const fn of (
+      globalThis as { __WAKU_RSC_RELOAD_LISTENERS__?: Array<() => void> }
+    ).__WAKU_RSC_RELOAD_LISTENERS__!)
+      fn();
+  });
+  await page.waitForResponse((res) => res.url().includes('/RSC/R/_root'));
+  expect(homeRscUrls.length).toBeGreaterThan(before);
+});
+
+test('navigate guard: download links are not intercepted', async ({ page }) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await page.evaluate(() => {
+    const a = document.createElement('a');
+    a.href = '/about';
+    a.setAttribute('download', 'about.html');
+    a.id = 'dl';
+    a.textContent = 'Download';
+    document.body.appendChild(a);
+    (window as unknown as Record<string, unknown>).__sentinel = 'set';
+  });
+
+  // event.downloadRequest is non-null for download-attribute clicks, so the
+  // navigate handler must return early instead of intercepting. The proof:
+  // a browser-level download is dispatched, the URL stays on /, and our
+  // SPA sentinel survives (no full reload either).
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#dl').click(),
+  ]);
+  expect(download.suggestedFilename()).toBe('about.html');
+  await expect(page).toHaveURL('/');
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__sentinel,
+    ),
+  ).toBe('set');
+});
+
+test('navigate guard: POST form submissions are not intercepted', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__sentinel = 'set';
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/about';
+    form.id = 'test-form';
+    const btn = document.createElement('button');
+    btn.type = 'submit';
+    btn.id = 'submit-btn';
+    btn.textContent = 'Submit';
+    form.appendChild(btn);
+    document.body.appendChild(form);
+  });
+
+  // event.formData is non-null for POST form submissions, so our guard
+  // returns early -- the browser does a full document navigation, which
+  // destroys the sentinel we set above.
+  await Promise.all([
+    page.waitForNavigation(),
+    page.locator('#submit-btn').click(),
+  ]);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__sentinel,
+    ),
+  ).toBeUndefined();
+});
+
 test('SSR 404: unknown route returns 404 with the 404 page', async ({
   page,
 }) => {

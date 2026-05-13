@@ -59,10 +59,11 @@ const PENDING_ATTR = 'data-waku-pending';
 // navigate event fires -- looks up THAT <Pending>'s startTransition. So two
 // <Pending>s pointing at the same href stay independent, and isPending lights
 // up only on the one that was actually clicked.
-type RegisterFn = (
-  id: string,
-  startTransition: TransitionStartFunction,
-) => () => void;
+type PendingEntry = {
+  href: string | undefined;
+  startTransition: TransitionStartFunction;
+};
+type RegisterFn = (id: string, entry: PendingEntry) => () => void;
 
 const noopRegister: RegisterFn = () => () => {};
 const PendingRegistryContext = createContext<{ register: RegisterFn }>({
@@ -86,8 +87,14 @@ const PendingRegistryContext = createContext<{ register: RegisterFn }>({
 // skips event.scroll(); otherwise the browser's default after-transition
 // scroll behavior applies.
 //
-// Not yet implemented (vs waku/router/client): `unstable_events`.
+// `unstable_events` exposes start/complete subscriptions for route changes;
+// see InnerRouter for emission points.
 type PushReplaceOptions = { scroll?: boolean };
+type RouteChangeEvents = {
+  on: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
+  off: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
+};
+const noopEvents: RouteChangeEvents = { on: () => {}, off: () => {} };
 export function useRouter() {
   const ctx = useContext(RouterContext);
   const route: Route = ctx?.route ?? { path: '/', query: '', hash: '' };
@@ -115,6 +122,8 @@ export function useRouter() {
     prefetch: (to: string) => {
       ctx?.prefetchRoute(parseRoute(new URL(to, window.location.href)));
     },
+    unstable_events: (ctx?.routeChangeEvents ??
+      noopEvents) as RouteChangeEvents,
   };
 }
 
@@ -128,10 +137,6 @@ export function Pending({
   const [isPending, startTransition] = useTransition();
   const { register } = useContext(PendingRegistryContext);
   const id = useId();
-  useLayoutEffect(
-    () => register(id, startTransition),
-    [id, register, startTransition],
-  );
   const stamped = Children.map(children, (child) => {
     if (isValidElement(child) && child.type === 'a') {
       return cloneElement(child as ReactElement<Record<string, unknown>>, {
@@ -140,6 +145,22 @@ export function Pending({
     }
     return child;
   });
+  // Capture the wrapped <a>'s href so that programmatic / back-forward
+  // navigations (which have no event.sourceElement) can still find their
+  // Pending by matching the destination path.
+  const href = Children.toArray(children)
+    .map((child) => {
+      if (isValidElement(child) && child.type === 'a') {
+        const { href: h } = child.props as { href?: unknown };
+        return typeof h === 'string' ? h : undefined;
+      }
+      return undefined;
+    })
+    .find((h): h is string => h !== undefined);
+  useLayoutEffect(
+    () => register(id, { href, startTransition }),
+    [id, href, register, startTransition],
+  );
   return (
     <>
       {stamped}
@@ -176,7 +197,7 @@ function InnerRouter({
     // Only on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const registryRef = useRef(new Map<string, TransitionStartFunction>());
+  const registryRef = useRef(new Map<string, PendingEntry>());
   const staticPathSetRef = useRef(new Set<string>());
   const cachedIdSetRef = useRef(new Set<string>());
   // Stable Set so Waku's <Slice> can mutate it (add on fetch start, delete on
@@ -202,8 +223,8 @@ function InnerRouter({
       () => {},
     );
   }, [elementsPromise]);
-  const register = useCallback<RegisterFn>((id, st) => {
-    registryRef.current.set(id, st);
+  const register = useCallback<RegisterFn>((id, entry) => {
+    registryRef.current.set(id, entry);
     return () => {
       registryRef.current.delete(id);
     };
@@ -231,6 +252,35 @@ function InnerRouter({
     }
     return params;
   }, []);
+  // Subscribers for route-change events. Stable on/off pair so consumers can
+  // re-register without invalidating set entries. The router emits 'start'
+  // before refetching and 'complete' after applying the new route.
+  type RouteEventName = 'start' | 'complete';
+  type RouteEventListener = (route: Route) => void;
+  const routeChangeListeners = useMemo(
+    () => ({
+      start: new Set<RouteEventListener>(),
+      complete: new Set<RouteEventListener>(),
+    }),
+    [],
+  );
+  const emitRouteEvent = useCallback(
+    (name: RouteEventName, r: Route) => {
+      for (const listener of routeChangeListeners[name]) listener(r);
+    },
+    [routeChangeListeners],
+  );
+  const routeChangeEvents = useMemo(
+    () => ({
+      on: (name: RouteEventName, handler: RouteEventListener) => {
+        routeChangeListeners[name].add(handler);
+      },
+      off: (name: RouteEventName, handler: RouteEventListener) => {
+        routeChangeListeners[name].delete(handler);
+      },
+    }),
+    [routeChangeListeners],
+  );
   // Eagerly fetch the RSC for a route (used by useRouter().prefetch). Build
   // output may also publish a __WAKU_ROUTER_PREFETCH__ helper that returns the
   // JS chunk ids for a path; if present, we preload them too.
@@ -255,6 +305,27 @@ function InnerRouter({
     },
     [enhanceFetchWithSkip, getRscParams],
   );
+  // Vite HMR: when a server file changes, Waku's dev runtime invokes any
+  // callbacks in __WAKU_RSC_RELOAD_LISTENERS__. We register one that drops
+  // our path/id caches (so a "static" route picks up the new content) and
+  // refetches the current route. In production import.meta.hot is undefined
+  // and the effect body returns early.
+  useEffect(() => {
+    if (!(import.meta as { hot?: unknown }).hot) return;
+    const refetchRoute = () => {
+      staticPathSetRef.current.clear();
+      cachedIdSetRef.current.clear();
+      refetch(encodeRoutePath(route.path), getRscParams(route.query));
+    };
+    const listeners = ((
+      globalThis as { __WAKU_RSC_RELOAD_LISTENERS__?: Array<() => void> }
+    ).__WAKU_RSC_RELOAD_LISTENERS__ ||= []);
+    listeners.unshift(refetchRoute);
+    return () => {
+      const i = listeners.indexOf(refetchRoute);
+      if (i !== -1) listeners.splice(i, 1);
+    };
+  }, [route, refetch, getRscParams]);
   useEffect(() => {
     const callback = (event: NavigateEvent) => {
       if (!event.canIntercept) return;
@@ -270,27 +341,50 @@ function InnerRouter({
       // to suppress scrolling we still need to intercept so we can pass
       // scroll: 'manual' and skip the browser's anchor scroll.
       if (event.hashChange) {
+        // Hash-only navigations don't refetch, so 'start' and 'complete'
+        // both fire effectively together; emit both so subscribers don't
+        // have to special-case them.
+        emitRouteEvent('start', nextRoute);
         if (suppressScroll) {
           event.intercept({
             scroll: 'manual',
             handler: async () => {
               setRoute(nextRoute);
+              emitRouteEvent('complete', nextRoute);
             },
           });
         } else {
           setRoute(nextRoute);
+          emitRouteEvent('complete', nextRoute);
         }
         return;
       }
+      emitRouteEvent('start', nextRoute);
       const signal = event.signal;
       const source = (event as NavigateEvent & { sourceElement?: Element })
         .sourceElement;
       const id =
         source?.closest?.(`a[${PENDING_ATTR}]`)?.getAttribute(PENDING_ATTR) ??
         null;
-      const registered = id ? registryRef.current.get(id) : undefined;
+      // Prefer the source-element match (most precise: tied to the actual
+      // clicked <a>). For programmatic push/replace and browser back/forward
+      // there's no sourceElement, so fall back to any <Pending> whose
+      // wrapped <a>'s href resolves to this destination path.
+      let registered = id ? registryRef.current.get(id) : undefined;
+      if (!registered) {
+        for (const entry of registryRef.current.values()) {
+          if (
+            entry.href !== undefined &&
+            new URL(entry.href, window.location.href).pathname ===
+              nextRoute.path
+          ) {
+            registered = entry;
+            break;
+          }
+        }
+      }
       const startTransition: TransitionStartFunction =
-        registered ?? ((fn) => fn());
+        registered?.startTransition ?? ((fn) => fn());
       event.intercept({
         ...(suppressScroll ? { scroll: 'manual' as const } : {}),
         handler: () =>
@@ -326,6 +420,7 @@ function InnerRouter({
                 }
                 setRenderError(null);
                 setRoute(targetRoute);
+                emitRouteEvent('complete', targetRoute);
                 resolve();
               } catch (err) {
                 reject(err);
@@ -338,7 +433,7 @@ function InnerRouter({
     return () => {
       window.navigation.removeEventListener('navigate', callback);
     };
-  }, [refetch, enhanceFetchWithSkip, getRscParams]);
+  }, [refetch, enhanceFetchWithSkip, getRscParams, emitRouteEvent]);
   // Mirror the shape Waku's INTERNAL_ServerRouter provides. We only care about
   // `route` and `prefetchRoute`; the other fields are no-ops so the context
   // value is type-compatible.
@@ -350,10 +445,10 @@ function InnerRouter({
       route,
       changeRoute: notAvailable('changeRoute') as never,
       prefetchRoute,
-      routeChangeEvents: { on: () => {}, off: () => {} },
+      routeChangeEvents,
       fetchingSlices,
     }),
-    [route, prefetchRoute, fetchingSlices],
+    [route, prefetchRoute, routeChangeEvents, fetchingSlices],
   );
   return (
     <RouterContext.Provider value={routerCtxValue}>
@@ -381,9 +476,4 @@ export function Router() {
   );
 }
 
-// TODO: route-change event subscriber (useRouter().unstable_events)
-// TODO: HMR cache invalidation (clear staticPathSet/cachedIdSet on hot reload)
-// TODO: <Pending> for non-click navigations (browser back/forward, programmatic
-//       navigate()) -- currently no source element, so no <Pending> lights up
-// TODO: e2e coverage for the downloadRequest and formData guard branches
 // TODO: and more?

@@ -93,6 +93,44 @@ test('two <Pending>s for the same href stay independent', async ({ page }) => {
   await expect(page.getByTestId('pending-alt')).toHaveCount(0);
 });
 
+test('Pending lights up for programmatic navigation that matches its href', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('pending')).toHaveCount(0);
+
+  // No event.sourceElement -- there's no click. The Pending for /slow should
+  // still light up because the destination matches its wrapped <a>'s href.
+  await page.evaluate(() => {
+    void window.navigation.navigate('/slow').finished;
+  });
+  await expect(page.getByTestId('pending')).toBeVisible();
+  await expect(page.locator('h1')).toHaveText('Home');
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('pending')).toHaveCount(0);
+});
+
+test('Pending lights up on browser back/forward to a matching href', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+
+  await page.getByRole('link', { name: 'Slow', exact: true }).click();
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+
+  // Go back to /, then forward to /slow. The forward step has no source
+  // element but the destination matches the Pending's href.
+  await page.goBack();
+  await expect(page.locator('h1')).toHaveText('Home');
+
+  await page.goForward();
+  await expect(page.getByTestId('pending')).toBeVisible();
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('pending')).toHaveCount(0);
+});
+
 test('pending stays true through nested client-side Suspense, not just the server response', async ({
   page,
 }) => {
