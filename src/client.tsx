@@ -12,6 +12,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -34,10 +35,12 @@ import {
   unstable_getRouteSlotId as getRouteSlotId,
   unstable_IS_STATIC_ID as IS_STATIC_ID,
   unstable_ROUTE_ID as ROUTE_ID,
+  unstable_RouterContext,
   unstable_SKIP_HEADER as SKIP_HEADER,
 } from 'waku/router/client';
 
 type Elements = Record<string, unknown>;
+type Route = { path: string; query: string; hash: string };
 
 const NOT_FOUND_PATH = '/404';
 const PENDING_ATTR = 'data-waku-pending';
@@ -57,6 +60,39 @@ const noopRegister: RegisterFn = () => () => {};
 const RouterContext = createContext<{ register: RegisterFn }>({
   register: noopRegister,
 });
+
+// We piggyback on Waku's unstable_RouterContext for the route state. The
+// server-side `INTERNAL_ServerRouter` that Waku's define-router runs during
+// SSR already populates this context with the real route, so our useRouter
+// reads correct values during SSR -- no hydration mismatch, no flicker. On
+// the client our `<Router>` provides the same context shape below.
+//
+// Mirrors the shape of waku/router/client's useRouter() so apps migrating
+// across can swap the import path. push/replace/reload/back/forward are thin
+// wrappers over window.navigation; route info comes from context.
+//
+// Not yet implemented (vs waku/router/client): `prefetch`, `unstable_events`,
+// and the `scroll` option on push/replace.
+export function useRouter() {
+  const ctx = useContext(unstable_RouterContext);
+  const route: Route = ctx?.route ?? { path: '/', query: '', hash: '' };
+  return {
+    path: route.path,
+    query: route.query,
+    hash: route.hash,
+    push: (to: string) =>
+      window.navigation.navigate(to, { history: 'push' }).finished,
+    replace: (to: string) =>
+      window.navigation.navigate(to, { history: 'replace' }).finished,
+    reload: () => window.navigation.reload().finished,
+    back: () => {
+      window.navigation.back();
+    },
+    forward: () => {
+      window.navigation.forward();
+    },
+  };
+}
 
 export function Pending({
   fallback,
@@ -89,23 +125,30 @@ export function Pending({
 }
 
 function InnerRouter({
-  initialRoutePath,
+  initialRoute,
   httpStatus,
 }: {
-  initialRoutePath: string;
+  initialRoute: Route;
   httpStatus: string | undefined;
 }) {
   const refetch = useRefetch();
-  const [routePath, setRoutePath] = useState(initialRoutePath);
+  // Waku's INTERNAL_ServerRouter renders the SSR tree with hash: '' (URL
+  // fragments aren't sent to the server), so we mirror that to keep the
+  // first client render in sync, then upgrade to the real hash post-hydration.
+  const [route, setRoute] = useState<Route>(() => ({
+    ...initialRoute,
+    hash: '',
+  }));
+  useEffect(() => {
+    if (initialRoute.hash) {
+      setRoute((r) => ({ ...r, hash: initialRoute.hash }));
+    }
+    // Only on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const registryRef = useRef(new Map<string, TransitionStartFunction>());
-  // Paths whose response was marked IS_STATIC: subsequent navigations to
-  // them skip refetch entirely. Slot ids the server has already given us;
-  // sent back via SKIP_HEADER so the server can omit them on the next fetch.
   const staticPathSetRef = useRef(new Set<string>());
   const cachedIdSetRef = useRef(new Set<string>());
-  // Track caches off the elements promise (which Waku populates from the
-  // initial SSR payload and from every refetch). Doing it from a useEffect
-  // lets us pick up the initial elements too, not just the ones we refetch.
   const elementsPromise = useElementsPromise();
   useEffect(() => {
     elementsPromise.then(
@@ -134,9 +177,14 @@ function InnerRouter({
   useEffect(() => {
     const callback = (event: NavigateEvent) => {
       if (!event.canIntercept) return;
-      if (event.hashChange || event.downloadRequest !== null || event.formData)
+      if (event.downloadRequest !== null || event.formData) return;
+      const nextRoute = parseRoute(new URL(event.destination.url));
+      // Hash-only navigations: don't intercept (the browser handles URL + scroll
+      // natively), but DO sync state so useRouter().hash stays current.
+      if (event.hashChange) {
+        setRoute(nextRoute);
         return;
-      const route = parseRoute(new URL(event.destination.url));
+      }
       const signal = event.signal;
       const source = (event as NavigateEvent & { sourceElement?: Element })
         .sourceElement;
@@ -158,36 +206,33 @@ function InnerRouter({
           new Promise<void>((resolve, reject) => {
             startTransition(async () => {
               try {
-                let targetPath: string;
+                let targetRoute = nextRoute;
                 try {
-                  // Already-loaded static route -- no network round-trip, the
-                  // element is still in the store.
-                  if (!staticPathSetRef.current.has(route.path)) {
+                  if (!staticPathSetRef.current.has(nextRoute.path)) {
                     await refetch(
-                      encodeRoutePath(route.path),
-                      undefined,
+                      encodeRoutePath(nextRoute.path),
+                      new URLSearchParams({ query: nextRoute.query }),
                       enhanceFetchWithSkip,
                     );
                   }
                   if (signal.aborted) return resolve();
-                  targetPath = route.path;
                 } catch (err) {
                   if (signal.aborted) return resolve();
                   if (getErrorInfo(err)?.status === 404) {
                     if (!staticPathSetRef.current.has(NOT_FOUND_PATH)) {
                       await refetch(
                         encodeRoutePath(NOT_FOUND_PATH),
-                        undefined,
+                        new URLSearchParams({ query: '' }),
                         enhanceFetchWithSkip,
                       );
                     }
                     if (signal.aborted) return resolve();
-                    targetPath = NOT_FOUND_PATH;
+                    targetRoute = { path: NOT_FOUND_PATH, query: '', hash: '' };
                   } else {
                     throw err;
                   }
                 }
-                setRoutePath(targetPath);
+                setRoute(targetRoute);
                 resolve();
               } catch (err) {
                 reject(err);
@@ -201,36 +246,53 @@ function InnerRouter({
       window.navigation.removeEventListener('navigate', callback);
     };
   }, [refetch]);
+  // Mirror the shape Waku's INTERNAL_ServerRouter provides. We only care about
+  // `route` for our useRouter; the other fields are present as no-ops so the
+  // context value is type-compatible.
+  const notAvailable = (name: string) => () => {
+    throw new Error(`${name} is not available in waku-navigation`);
+  };
+  const routerCtxValue = useMemo(
+    () => ({
+      route,
+      changeRoute: notAvailable('changeRoute') as never,
+      prefetchRoute: notAvailable('prefetchRoute') as never,
+      routeChangeEvents: { on: () => {}, off: () => {} },
+      fetchingSlices: new Set<string>(),
+    }),
+    [route],
+  );
   return (
-    <RouterContext.Provider value={{ register }}>
-      <Slot id="root">
-        <meta name="httpstatus" content={httpStatus} />
-        <Slot id={getRouteSlotId(routePath)} />
-      </Slot>
-    </RouterContext.Provider>
+    <unstable_RouterContext.Provider value={routerCtxValue}>
+      <RouterContext.Provider value={{ register }}>
+        <Slot id="root">
+          <meta name="httpstatus" content={httpStatus} />
+          <Slot id={getRouteSlotId(route.path)} />
+        </Slot>
+      </RouterContext.Provider>
+    </unstable_RouterContext.Provider>
   );
 }
 
 export function Router() {
   const httpStatus = getHttpStatusFromMeta();
-  const initialRoutePath =
+  const parsed = parseRoute(new URL(window.navigation.currentEntry!.url!));
+  const initialRoute: Route =
     httpStatus === '404'
-      ? NOT_FOUND_PATH
-      : parseRoute(new URL(window.navigation.currentEntry!.url!)).path;
+      ? { path: NOT_FOUND_PATH, query: '', hash: '' }
+      : parsed;
   return (
-    <Root initialRscPath={encodeRoutePath(initialRoutePath)}>
-      <InnerRouter
-        initialRoutePath={initialRoutePath}
-        httpStatus={httpStatus}
-      />
+    <Root initialRscPath={encodeRoutePath(initialRoute.path)}>
+      <InnerRouter initialRoute={initialRoute} httpStatus={httpStatus} />
     </Root>
   );
 }
 
-// TODO: query & hash support
 // TODO: slice support (upstream) -- including the IS_STATIC:<slotId> marker
 // TODO: error handling (non-404 refetch failures currently rethrow uncaught)
-// TODO: prefetching
+// TODO: prefetching (also adds useRouter().prefetch)
+// TODO: scroll option on useRouter().push/replace
+// TODO: route-change event subscriber (useRouter().unstable_events)
 // TODO: HMR cache invalidation (clear staticPathSet/cachedIdSet on hot reload)
 // TODO: <Pending> for non-click navigations (browser back/forward, programmatic
 //       navigate()) -- currently no source element, so no <Pending> lights up

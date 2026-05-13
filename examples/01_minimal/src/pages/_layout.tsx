@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { RouteInfo } from '../components/route-info.js';
 
 export default function HomeLayout({ children }: { children: ReactNode }) {
   return (
@@ -11,6 +12,7 @@ export default function HomeLayout({ children }: { children: ReactNode }) {
           <a href="/about">About</a>
         </li>
       </ul>
+      <RouteInfo />
       <main>{children}</main>
     </>
   );

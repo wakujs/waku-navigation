@@ -156,6 +156,37 @@ test('external-nav guard: cross-origin link does not trigger intercept', async (
   expect(observed.canIntercept).toBe(false);
 });
 
+test('useRouter exposes path, query, and hash; query is passed to refetch', async ({
+  page,
+}) => {
+  const rscRequestUrls: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/RSC/')) rscRequestUrls.push(req.url());
+  });
+  await page.goto('/?foo=bar');
+  await waitForHydration(page);
+  await expect(page.getByTestId('route-info')).toHaveText(
+    'path=/;query=foo=bar;hash=',
+  );
+
+  // Navigate to /about?baz=qux -- refetch should fire with query=baz%3Dqux
+  // appended to the RSC URL.
+  await page.evaluate(
+    () => window.navigation.navigate('/about?baz=qux').finished,
+  );
+  await expect(page).toHaveURL('/about?baz=qux');
+  await expect(page.getByTestId('route-info')).toHaveText(
+    'path=/about;query=baz=qux;hash=',
+  );
+  expect(rscRequestUrls.some((u) => u.includes('query=baz%3Dqux'))).toBe(true);
+
+  // Hash-only nav: not intercepted, but the state should still sync.
+  await page.evaluate(() => window.navigation.navigate('#section').finished);
+  await expect(page.getByTestId('route-info')).toHaveText(
+    'path=/about;query=baz=qux;hash=#section',
+  );
+});
+
 test('static routes skip the refetch on revisit', async ({ page }) => {
   const rscRequests: string[] = [];
   page.on('request', (req) => {
