@@ -296,8 +296,13 @@ test('useRouter().prefetch warms the RSC cache so subsequent navigation skips th
   await waitForHydration(page);
 
   // Click "Prefetch /about" -- should fire exactly one RSC request for /about.
+  // The response promise must be registered before the click so a fast CI
+  // response isn't missed in the window between click and listener attach.
+  const aboutResponse = page.waitForResponse((res) =>
+    res.url().includes('/RSC/R/about'),
+  );
   await page.getByTestId('prefetch').click();
-  await page.waitForResponse((res) => res.url().includes('/RSC/R/about'));
+  await aboutResponse;
   expect(aboutRscUrls.length).toBe(1);
 
   // Now actually navigate. The prefetch already populated Waku's RSC store,
