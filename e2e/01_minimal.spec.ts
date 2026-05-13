@@ -283,6 +283,31 @@ test('non-404 refetch failure propagates to the user ErrorBoundary', async ({
   );
 });
 
+test('useRouter().prefetch warms the RSC cache so subsequent navigation skips the network', async ({
+  page,
+}) => {
+  const aboutRscUrls: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/RSC/R/about')) {
+      aboutRscUrls.push(req.url());
+    }
+  });
+  await page.goto('/');
+  await waitForHydration(page);
+
+  // Click "Prefetch /about" -- should fire exactly one RSC request for /about.
+  await page.getByTestId('prefetch').click();
+  await page.waitForResponse((res) => res.url().includes('/RSC/R/about'));
+  expect(aboutRscUrls.length).toBe(1);
+
+  // Now actually navigate. The prefetch already populated Waku's RSC store,
+  // so no additional network request should fire.
+  await page.locator('a', { hasText: 'About' }).click();
+  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+  await page.waitForTimeout(100);
+  expect(aboutRscUrls.length).toBe(1);
+});
+
 test('SSR 404: unknown route returns 404 with the 404 page', async ({
   page,
 }) => {

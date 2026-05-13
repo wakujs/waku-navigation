@@ -20,9 +20,11 @@ import {
   type ReactNode,
   type TransitionStartFunction,
 } from 'react';
+import { preloadModule } from 'react-dom';
 import {
   Root,
   Slot,
+  unstable_prefetchRsc as prefetchRsc,
   unstable_withEnhanceFetchFn as withEnhanceFetchFn,
   useElementsPromise_UNSTABLE as useElementsPromise,
   useRefetch,
@@ -36,7 +38,7 @@ import {
   unstable_getRouteSlotId as getRouteSlotId,
   unstable_IS_STATIC_ID as IS_STATIC_ID,
   unstable_ROUTE_ID as ROUTE_ID,
-  unstable_RouterContext,
+  unstable_RouterContext as RouterContext,
   unstable_SKIP_HEADER as SKIP_HEADER,
 } from 'waku/router/client';
 
@@ -63,11 +65,12 @@ type RegisterFn = (
 ) => () => void;
 
 const noopRegister: RegisterFn = () => () => {};
-const RouterContext = createContext<{ register: RegisterFn }>({
+const PendingRegistryContext = createContext<{ register: RegisterFn }>({
   register: noopRegister,
 });
 
-// We piggyback on Waku's unstable_RouterContext for the route state. The
+// We piggyback on Waku's RouterContext (imported above from
+// waku/router/client as unstable_RouterContext) for the route state. The
 // server-side `INTERNAL_ServerRouter` that Waku's define-router runs during
 // SSR already populates this context with the real route, so our useRouter
 // reads correct values during SSR -- no hydration mismatch, no flicker. On
@@ -75,12 +78,12 @@ const RouterContext = createContext<{ register: RegisterFn }>({
 //
 // Mirrors the shape of waku/router/client's useRouter() so apps migrating
 // across can swap the import path. push/replace/reload/back/forward are thin
-// wrappers over window.navigation; route info comes from context.
+// wrappers over window.navigation; route info and prefetch come from context.
 //
-// Not yet implemented (vs waku/router/client): `prefetch`, `unstable_events`,
-// and the `scroll` option on push/replace.
+// Not yet implemented (vs waku/router/client): `unstable_events` and the
+// `scroll` option on push/replace.
 export function useRouter() {
-  const ctx = useContext(unstable_RouterContext);
+  const ctx = useContext(RouterContext);
   const route: Route = ctx?.route ?? { path: '/', query: '', hash: '' };
   return {
     path: route.path,
@@ -97,6 +100,9 @@ export function useRouter() {
     forward: () => {
       window.navigation.forward();
     },
+    prefetch: (to: string) => {
+      ctx?.prefetchRoute(parseRoute(new URL(to, window.location.href)));
+    },
   };
 }
 
@@ -108,7 +114,7 @@ export function Pending({
   children: ReactNode;
 }) {
   const [isPending, startTransition] = useTransition();
-  const { register } = useContext(RouterContext);
+  const { register } = useContext(PendingRegistryContext);
   const id = useId();
   useLayoutEffect(
     () => register(id, startTransition),
@@ -190,6 +196,53 @@ function InnerRouter({
       registryRef.current.delete(id);
     };
   }, []);
+  // Adds the X-Waku-Router-Skip header listing element ids we already have,
+  // so the server can skip re-rendering them. Shared by navigate + prefetch.
+  const enhanceFetchWithSkip = useMemo(
+    () =>
+      withEnhanceFetchFn((fetchFn) => (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set(SKIP_HEADER, JSON.stringify([...cachedIdSetRef.current]));
+        return fetchFn(input, { ...init, headers });
+      }),
+    [],
+  );
+  // Waku's prefetch cache keys the URLSearchParams by identity, so a fresh
+  // `new URLSearchParams(...)` on every call would invalidate the prefetch
+  // entry. We memoize by query string so the same params object is reused.
+  const rscParamsByQueryRef = useRef(new Map<string, URLSearchParams>());
+  const getRscParams = useCallback((query: string) => {
+    let params = rscParamsByQueryRef.current.get(query);
+    if (!params) {
+      params = new URLSearchParams({ query });
+      rscParamsByQueryRef.current.set(query, params);
+    }
+    return params;
+  }, []);
+  // Eagerly fetch the RSC for a route (used by useRouter().prefetch). Build
+  // output may also publish a __WAKU_ROUTER_PREFETCH__ helper that returns the
+  // JS chunk ids for a path; if present, we preload them too.
+  const prefetchRoute = useCallback(
+    (next: Route) => {
+      if (staticPathSetRef.current.has(next.path)) return;
+      prefetchRsc(
+        encodeRoutePath(next.path),
+        getRscParams(next.query),
+        enhanceFetchWithSkip,
+      );
+      (
+        globalThis as {
+          __WAKU_ROUTER_PREFETCH__?: (
+            path: string,
+            preload: (id: string) => void,
+          ) => void;
+        }
+      ).__WAKU_ROUTER_PREFETCH__?.(next.path, (id) =>
+        preloadModule(id, { as: 'script' }),
+      );
+    },
+    [enhanceFetchWithSkip, getRscParams],
+  );
   useEffect(() => {
     const callback = (event: NavigateEvent) => {
       if (!event.canIntercept) return;
@@ -210,13 +263,6 @@ function InnerRouter({
       const registered = id ? registryRef.current.get(id) : undefined;
       const startTransition: TransitionStartFunction =
         registered ?? ((fn) => fn());
-      const enhanceFetchWithSkip = withEnhanceFetchFn(
-        (fetchFn) => (input, init) => {
-          const headers = new Headers(init?.headers);
-          headers.set(SKIP_HEADER, JSON.stringify([...cachedIdSetRef.current]));
-          return fetchFn(input, { ...init, headers });
-        },
-      );
       event.intercept({
         handler: () =>
           new Promise<void>((resolve, reject) => {
@@ -227,7 +273,7 @@ function InnerRouter({
                   if (!staticPathSetRef.current.has(nextRoute.path)) {
                     await refetch(
                       encodeRoutePath(nextRoute.path),
-                      new URLSearchParams({ query: nextRoute.query }),
+                      getRscParams(nextRoute.query),
                       enhanceFetchWithSkip,
                     );
                   }
@@ -238,7 +284,7 @@ function InnerRouter({
                     if (!staticPathSetRef.current.has(NOT_FOUND_PATH)) {
                       await refetch(
                         encodeRoutePath(NOT_FOUND_PATH),
-                        new URLSearchParams({ query: '' }),
+                        getRscParams(''),
                         enhanceFetchWithSkip,
                       );
                     }
@@ -263,10 +309,10 @@ function InnerRouter({
     return () => {
       window.navigation.removeEventListener('navigate', callback);
     };
-  }, [refetch]);
+  }, [refetch, enhanceFetchWithSkip, getRscParams]);
   // Mirror the shape Waku's INTERNAL_ServerRouter provides. We only care about
-  // `route` for our useRouter; the other fields are present as no-ops so the
-  // context value is type-compatible.
+  // `route` and `prefetchRoute`; the other fields are no-ops so the context
+  // value is type-compatible.
   const notAvailable = (name: string) => () => {
     throw new Error(`${name} is not available in waku-navigation`);
   };
@@ -274,21 +320,21 @@ function InnerRouter({
     () => ({
       route,
       changeRoute: notAvailable('changeRoute') as never,
-      prefetchRoute: notAvailable('prefetchRoute') as never,
+      prefetchRoute,
       routeChangeEvents: { on: () => {}, off: () => {} },
       fetchingSlices,
     }),
-    [route, fetchingSlices],
+    [route, prefetchRoute, fetchingSlices],
   );
   return (
-    <unstable_RouterContext.Provider value={routerCtxValue}>
-      <RouterContext.Provider value={{ register }}>
+    <RouterContext.Provider value={routerCtxValue}>
+      <PendingRegistryContext.Provider value={{ register }}>
         <Slot id="root">
           <meta name="httpstatus" content={httpStatus} />
           <Slot id={getRouteSlotId(route.path)} />
         </Slot>
-      </RouterContext.Provider>
-    </unstable_RouterContext.Provider>
+      </PendingRegistryContext.Provider>
+    </RouterContext.Provider>
   );
 }
 
@@ -306,7 +352,6 @@ export function Router() {
   );
 }
 
-// TODO: prefetching (also adds useRouter().prefetch)
 // TODO: scroll option on useRouter().push/replace
 // TODO: route-change event subscriber (useRouter().unstable_events)
 // TODO: HMR cache invalidation (clear staticPathSet/cachedIdSet on hot reload)
