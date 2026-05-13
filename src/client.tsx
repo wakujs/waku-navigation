@@ -147,6 +147,7 @@ function InnerRouter({
   }));
   useEffect(() => {
     if (initialRoute.hash) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRoute((r) => ({ ...r, hash: initialRoute.hash }));
     }
     // Only on mount.
@@ -156,8 +157,9 @@ function InnerRouter({
   const staticPathSetRef = useRef(new Set<string>());
   const cachedIdSetRef = useRef(new Set<string>());
   // Stable Set so Waku's <Slice> can mutate it (add on fetch start, delete on
-  // fetch end) without losing state across re-renders.
-  const fetchingSlicesRef = useRef(new Set<string>());
+  // fetch end) without losing state across re-renders. useMemo with [] keeps
+  // the same instance and avoids reading ref.current during render.
+  const fetchingSlices = useMemo(() => new Set<string>(), []);
   const elementsPromise = useElementsPromise();
   useEffect(() => {
     elementsPromise.then(
@@ -267,9 +269,9 @@ function InnerRouter({
       changeRoute: notAvailable('changeRoute') as never,
       prefetchRoute: notAvailable('prefetchRoute') as never,
       routeChangeEvents: { on: () => {}, off: () => {} },
-      fetchingSlices: fetchingSlicesRef.current,
+      fetchingSlices,
     }),
-    [route],
+    [route, fetchingSlices],
   );
   return (
     <unstable_RouterContext.Provider value={routerCtxValue}>

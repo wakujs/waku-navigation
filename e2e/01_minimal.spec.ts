@@ -150,7 +150,7 @@ test('external-nav guard: cross-origin link does not trigger intercept', async (
       window.navigation.addEventListener('navigate', listener);
       window.navigation
         .navigate('https://example.invalid/')
-        .finished.catch(() => {});
+        .finished?.catch(() => {});
     });
   });
   expect(observed.canIntercept).toBe(false);

@@ -10,11 +10,11 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "paths": {
-      "waku-navigation": ["src/index"]
+      "waku-navigation": ["./src/index"]
     },
     "declaration": true,
+    "rootDir": "./src",
     "outDir": "./dist"
   },
   "include": ["src"],
