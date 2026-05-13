@@ -1,1 +1,1 @@
-export { Pending, Router, useRouter } from './client.js';
+export { Pending, Router, Slice, useRouter } from './client.js';

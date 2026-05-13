@@ -28,6 +28,7 @@ import {
   useRefetch,
 } from 'waku/minimal/client';
 import {
+  Slice,
   unstable_encodeRoutePath as encodeRoutePath,
   unstable_getErrorInfo as getErrorInfo,
   unstable_getHttpStatusFromMeta as getHttpStatusFromMeta,
@@ -38,6 +39,11 @@ import {
   unstable_RouterContext,
   unstable_SKIP_HEADER as SKIP_HEADER,
 } from 'waku/router/client';
+
+// Slice is re-exported from waku/router/client unchanged. It only needs the
+// router context (fetchingSlices + the elements promise) -- both of which our
+// <Router> already provides -- so the component works as-is.
+export { Slice };
 
 type Elements = Record<string, unknown>;
 type Route = { path: string; query: string; hash: string };
@@ -149,6 +155,9 @@ function InnerRouter({
   const registryRef = useRef(new Map<string, TransitionStartFunction>());
   const staticPathSetRef = useRef(new Set<string>());
   const cachedIdSetRef = useRef(new Set<string>());
+  // Stable Set so Waku's <Slice> can mutate it (add on fetch start, delete on
+  // fetch end) without losing state across re-renders.
+  const fetchingSlicesRef = useRef(new Set<string>());
   const elementsPromise = useElementsPromise();
   useEffect(() => {
     elementsPromise.then(
@@ -258,7 +267,7 @@ function InnerRouter({
       changeRoute: notAvailable('changeRoute') as never,
       prefetchRoute: notAvailable('prefetchRoute') as never,
       routeChangeEvents: { on: () => {}, off: () => {} },
-      fetchingSlices: new Set<string>(),
+      fetchingSlices: fetchingSlicesRef.current,
     }),
     [route],
   );
@@ -288,7 +297,6 @@ export function Router() {
   );
 }
 
-// TODO: slice support (upstream) -- including the IS_STATIC:<slotId> marker
 // TODO: error handling (non-404 refetch failures currently rethrow uncaught)
 // TODO: prefetching (also adds useRouter().prefetch)
 // TODO: scroll option on useRouter().push/replace

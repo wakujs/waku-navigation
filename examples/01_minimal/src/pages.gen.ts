@@ -4,12 +4,17 @@
 import type { PathsForPages, GetConfigResponse } from 'waku/router';
 
 // prettier-ignore
+import type { getConfig as File_SlicesClock_getConfig } from './pages/_slices/clock';
+// prettier-ignore
+import type { getConfig as File_About_getConfig } from './pages/about';
+// prettier-ignore
 import type { getConfig as File_Index_getConfig } from './pages/index';
 
 // prettier-ignore
 type Page =
 | { path: '/404'; render: 'static' }
-| { path: '/about'; render: 'static' }
+| ({ path: '/_slices/clock' } & GetConfigResponse<typeof File_SlicesClock_getConfig>)
+| ({ path: '/about' } & GetConfigResponse<typeof File_About_getConfig>)
 | ({ path: '/' } & GetConfigResponse<typeof File_Index_getConfig>);
 
 // prettier-ignore

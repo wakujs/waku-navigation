@@ -234,6 +234,21 @@ test('refetch sends X-Waku-Router-Skip listing cached element ids', async ({
   expect(parsed.length).toBeGreaterThan(0);
 });
 
+test('<Slice> renders a server-defined slice inside a page', async ({
+  page,
+}) => {
+  // /about lists `slices: ['clock']` in its getConfig; the clock slice is
+  // declared at src/pages/_slices/clock.tsx and rendered via <Slice id="clock">.
+  await page.goto('/about');
+  await expect(page.getByTestId('clock')).toContainText(
+    'The time on the server when this slice was rendered',
+  );
+  // The slice's text contains an ISO timestamp; just sanity-check it parses.
+  const text = (await page.getByTestId('clock').textContent()) ?? '';
+  const match = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.exec(text);
+  expect(match).not.toBeNull();
+});
+
 test('SSR 404: unknown route returns 404 with the 404 page', async ({
   page,
 }) => {
