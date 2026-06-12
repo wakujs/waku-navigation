@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- update waku v1.0.0-beta.3 #2
+
 ## [0.0.2] - 2026-05-25
 
 ### Added

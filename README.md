@@ -53,7 +53,7 @@ import { Router } from 'waku-navigation';
 <Router />;
 ```
 
-No props. It reads the initial route from `window.navigation.currentEntry.url`, sets up the navigate-event listener, and renders the page slot. It mirrors the shape Waku's `INTERNAL_ServerRouter` provides during SSR, so server-rendered markup hydrates without a flicker.
+No props. It reads the initial route from `window.navigation.currentEntry.url` (preferring the route recorded in the RSC payload, so a server-rendered 404 page resolves to `/404`), sets up the navigate-event listener, and renders the page slot. It mirrors the shape Waku's `INTERNAL_ServerRouter` provides during SSR, so server-rendered markup hydrates without a flicker.
 
 ### `useRouter()`
 
@@ -222,7 +222,6 @@ import {
   unstable_removeBase,
   unstable_RouterContext,
   unstable_parseRoute,
-  unstable_getHttpStatusFromMeta,
 } from 'waku/router/client';
 ```
 
@@ -241,8 +240,8 @@ These are all handled inside the navigate-event listener so apps usually don't n
 - **Abort during transition** — `event.signal` is checked between async steps so a fast-clicked second navigation cleanly cancels the first without committing stale state.
 - **404 on the client** — a refetch that throws with `getErrorInfo(err)?.status === 404` is handled by refetching `/404` and pointing the slot there, mirroring Waku's behavior. The URL still reflects the user's request.
 - **Static route cache** — routes with `getConfig({ render: 'static' })` are added to a `staticPathSet` after their first fetch; revisits skip the refetch entirely (the RSC payload is already in Waku's store).
-- **`X-Waku-Router-Skip` header** — every refetch lists the element IDs we already have so the server can skip re-rendering shared layouts/slices.
-- **HMR cache invalidation** — when Waku's dev runtime fires `globalThis.__WAKU_RSC_RELOAD_LISTENERS__` (Vite HMR update), the router clears `staticPathSet` and `cachedIdSet` and refetches the current route. Guarded by `import.meta.hot` so it's stripped in production.
+- **`X-Waku-Router-Skip` header** — every refetch sends the etags of elements we already have (harvested from the RSC payload's `ETAG:`-prefixed entries) so the server can skip re-rendering shared layouts/slices whose etag still matches.
+- **HMR cache invalidation** — when Waku's dev runtime fires `globalThis.__WAKU_RSC_RELOAD_LISTENERS__` (Vite HMR update), the router clears `staticPathSet` and `cachedEtags` and refetches the current route. Guarded by `import.meta.hot` so it's stripped in production.
 
 ---
 

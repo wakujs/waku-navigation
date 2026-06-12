@@ -7,6 +7,7 @@ import {
   cloneElement,
   createContext,
   isValidElement,
+  use,
   useCallback,
   useContext,
   useEffect,
@@ -33,7 +34,6 @@ import {
   Slice,
   unstable_encodeRoutePath as encodeRoutePath,
   unstable_getErrorInfo as getErrorInfo,
-  unstable_getHttpStatusFromMeta as getHttpStatusFromMeta,
   unstable_parseRoute as parseRoute,
   unstable_getRouteSlotId as getRouteSlotId,
   unstable_IS_STATIC_ID as IS_STATIC_ID,
@@ -52,6 +52,11 @@ type Route = { path: string; query: string; hash: string };
 
 const NOT_FOUND_PATH = '/404';
 const PENDING_ATTR = 'data-waku-pending';
+// Mirrors ETAG_ID_PREFIX in waku's router/common.js, which is not exported
+// from waku/router/client. Elements under this prefix carry the etag for the
+// same-named slot; the X-Waku-Router-Skip header echoes them back so the
+// server can skip re-rendering unchanged slots.
+const ETAG_ID_PREFIX = 'ETAG:';
 
 // Each <Pending> generates a unique id via useId and stamps the child <a>
 // with data-waku-pending=<id>. The Router listens to document clicks for any
@@ -169,42 +174,51 @@ export function Pending({
   );
 }
 
-function InnerRouter({
-  initialRoute,
-  httpStatus,
-}: {
-  initialRoute: Route;
-  httpStatus: string | undefined;
-}) {
+function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   const refetch = useRefetch();
-  // Waku's INTERNAL_ServerRouter renders the SSR tree with hash: '' (URL
-  // fragments aren't sent to the server), so we mirror that to keep the
-  // first client render in sync, then upgrade to the real hash post-hydration.
-  const [route, setRoute] = useState<Route>(() => ({
-    ...initialRoute,
-    hash: '',
-  }));
+  const elementsPromise = useElementsPromise();
+  const [routeState, setRoute] = useState<Route>();
+  let route = routeState;
+  if (route === undefined) {
+    // First render only: the RSC payload records which route the server
+    // actually rendered (ROUTE_ID), so an unknown URL that was served the
+    // /404 page resolves to '/404' here. Suspending on `use` is free at this
+    // point -- the slots below suspend on the same promise during hydration
+    // -- but it must not happen on later renders: suspending InnerRouter
+    // inside a <Pending> transition keeps the navigation from ever
+    // committing. The hash starts as '' to match Waku's INTERNAL_ServerRouter
+    // SSR output (URL fragments aren't sent to the server) and is upgraded
+    // post-hydration in the effect below.
+    const elements = use(elementsPromise) as Elements;
+    const routeData = elements[ROUTE_ID] as
+      | [path: string, query: string]
+      | undefined;
+    route =
+      routeData && routeData[0] !== fallbackRoute.path
+        ? { path: routeData[0], query: routeData[1], hash: '' }
+        : { ...fallbackRoute, hash: '' };
+    setRoute(route);
+  }
   // Non-404 refetch failures (network errors, server 500s, etc.) get surfaced
   // by rethrowing during render so the user's <ErrorBoundary> can catch them.
   // The state clears on the next successful navigation.
   const [renderError, setRenderError] = useState<unknown>(null);
   if (renderError) throw renderError;
   useEffect(() => {
-    if (initialRoute.hash) {
+    if (fallbackRoute.hash) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setRoute((r) => ({ ...r, hash: initialRoute.hash }));
+      setRoute((r) => ({ ...(r as Route), hash: fallbackRoute.hash }));
     }
     // Only on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const registryRef = useRef(new Map<string, PendingEntry>());
   const staticPathSetRef = useRef(new Set<string>());
-  const cachedIdSetRef = useRef(new Set<string>());
+  const cachedEtagsRef = useRef<Record<string, string>>({});
   // Stable Set so Waku's <Slice> can mutate it (add on fetch start, delete on
   // fetch end) without losing state across re-renders. useMemo with [] keeps
   // the same instance and avoids reading ref.current during render.
   const fetchingSlices = useMemo(() => new Set<string>(), []);
-  const elementsPromise = useElementsPromise();
   useEffect(() => {
     elementsPromise.then(
       (elements: Elements) => {
@@ -214,11 +228,18 @@ function InnerRouter({
         if (routeData && elements[IS_STATIC_ID]) {
           staticPathSetRef.current.add(routeData[0]);
         }
-        cachedIdSetRef.current = new Set(
-          Object.keys(elements).filter(
-            (k) => !k.startsWith('_') && k !== ROUTE_ID && k !== IS_STATIC_ID,
-          ),
-        );
+        const etags: Record<string, string> = {};
+        for (const [key, value] of Object.entries(elements)) {
+          // Drop empty (clear signal) and non-Latin1 (breaks fetch) tags.
+          if (
+            key.startsWith(ETAG_ID_PREFIX) &&
+            typeof value === 'string' &&
+            /^[\u0020-\u00ff]+$/.test(value)
+          ) {
+            etags[key.slice(ETAG_ID_PREFIX.length)] = value;
+          }
+        }
+        cachedEtagsRef.current = etags;
       },
       () => {},
     );
@@ -229,13 +250,14 @@ function InnerRouter({
       registryRef.current.delete(id);
     };
   }, []);
-  // Adds the X-Waku-Router-Skip header listing element ids we already have,
-  // so the server can skip re-rendering them. Shared by navigate + prefetch.
+  // Adds the X-Waku-Router-Skip header mapping element ids to the etags we
+  // already hold, so the server can skip re-rendering elements whose etag
+  // still matches. Shared by navigate + prefetch.
   const enhanceFetchWithSkip = useMemo(
     () =>
       withEnhanceFetchFn((fetchFn) => (input, init) => {
         const headers = new Headers(init?.headers);
-        headers.set(SKIP_HEADER, JSON.stringify([...cachedIdSetRef.current]));
+        headers.set(SKIP_HEADER, JSON.stringify(cachedEtagsRef.current));
         return fetchFn(input, { ...init, headers });
       }),
     [],
@@ -314,7 +336,7 @@ function InnerRouter({
     if (!(import.meta as { hot?: unknown }).hot) return;
     const refetchRoute = () => {
       staticPathSetRef.current.clear();
-      cachedIdSetRef.current.clear();
+      cachedEtagsRef.current = {};
       refetch(encodeRoutePath(route.path), getRscParams(route.query));
     };
     const listeners = ((
@@ -454,7 +476,6 @@ function InnerRouter({
     <RouterContext.Provider value={routerCtxValue}>
       <PendingRegistryContext.Provider value={{ register }}>
         <Slot id="root">
-          <meta name="httpstatus" content={httpStatus} />
           <Slot id={getRouteSlotId(route.path)} />
         </Slot>
       </PendingRegistryContext.Provider>
@@ -463,15 +484,12 @@ function InnerRouter({
 }
 
 export function Router() {
-  const httpStatus = getHttpStatusFromMeta();
-  const parsed = parseRoute(new URL(window.navigation.currentEntry!.url!));
-  const initialRoute: Route =
-    httpStatus === '404'
-      ? { path: NOT_FOUND_PATH, query: '', hash: '' }
-      : parsed;
+  const initialRoute = parseRoute(
+    new URL(window.navigation.currentEntry!.url!),
+  );
   return (
     <Root initialRscPath={encodeRoutePath(initialRoute.path)}>
-      <InnerRouter initialRoute={initialRoute} httpStatus={httpStatus} />
+      <InnerRouter fallbackRoute={initialRoute} />
     </Root>
   );
 }

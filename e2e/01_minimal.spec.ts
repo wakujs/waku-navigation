@@ -210,7 +210,7 @@ test('static routes skip the refetch on revisit', async ({ page }) => {
   expect(rscRequests.length).toBe(before);
 });
 
-test('refetch sends X-Waku-Router-Skip listing cached element ids', async ({
+test('refetch sends X-Waku-Router-Skip mapping cached element ids to etags', async ({
   page,
 }) => {
   const skipHeaders: string[] = [];
@@ -227,11 +227,16 @@ test('refetch sends X-Waku-Router-Skip listing cached element ids', async ({
   await page.waitForTimeout(100);
 
   expect(skipHeaders.length).toBeGreaterThan(0);
-  // The header should be a JSON array of slot ids; not just "[]" (we had
-  // initial elements from SSR before this navigation).
-  const parsed = JSON.parse(skipHeaders[0]!);
-  expect(Array.isArray(parsed)).toBe(true);
-  expect(parsed.length).toBeGreaterThan(0);
+  // The header should be a JSON object mapping slot ids to etags; not just
+  // "{}" (we had initial elements from SSR before this navigation).
+  const parsed: unknown = JSON.parse(skipHeaders[0]!);
+  expect(Array.isArray(parsed)).toBe(false);
+  expect(typeof parsed).toBe('object');
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  expect(entries.length).toBeGreaterThan(0);
+  for (const [, etag] of entries) {
+    expect(typeof etag).toBe('string');
+  }
 });
 
 test('<Slice> renders a server-defined slice inside a page', async ({
