@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Pending } from 'waku-navigation';
+import { StatusLink } from '../components/status-link.js';
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
@@ -19,6 +20,9 @@ export default function Layout({ children }: { children: ReactNode }) {
           >
             <a href="/slow">Slow (alt)</a>
           </Pending>
+        </li>
+        <li>
+          <StatusLink to="/slow">Slow (status)</StatusLink>
         </li>
       </ul>
       <main>{children}</main>

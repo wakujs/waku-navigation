@@ -7,6 +7,7 @@ import {
   cloneElement,
   createContext,
   isValidElement,
+  startTransition as defaultStartTransition,
   use,
   useCallback,
   useContext,
@@ -14,11 +15,13 @@ import {
   useId,
   useLayoutEffect,
   useMemo,
+  useOptimistic,
   useRef,
   useState,
   useTransition,
   type ReactElement,
   type ReactNode,
+  type RefObject,
   type TransitionStartFunction,
 } from 'react';
 import { preloadModule } from 'react-dom';
@@ -174,6 +177,58 @@ export function Pending({
   );
 }
 
+// Counterpart of waku/router/client's useNavigationStatus_UNSTABLE. Upstream
+// reads a context provided by <Link>, whose useTransition owns the navigation
+// -- with plain <a> there is no such owner, so the mechanics invert: each
+// hook holds useOptimistic state, and the router flips it to pending inside
+// the navigation transition. React renders the optimistic value urgently
+// (the indicator appears on click) and reverts it in the same commit that
+// reveals the new route -- after the destination's client-side Suspense
+// settles, and also on abort or error, since the transition ends either way.
+//
+// A hook cannot locate its own DOM position, so the enclosing <a> is found
+// through the returned `ref`: attach it to any element the component renders
+// (or the <a> itself) and the router resolves `ref.current.closest('a')` at
+// navigation time. Matching mirrors <Pending>: clicks match by anchor
+// identity (event.sourceElement), so two <a>s with the same href stay
+// independent; programmatic and back/forward navigations fall back to
+// matching the anchor's href against the destination path. Without an
+// attached ref or an enclosing <a>, `pending` stays undefined -- like
+// upstream's hook outside a <Link>. Hash-only navigations complete
+// instantly and never set pending.
+type NavigationStatus = { pending?: boolean };
+const IDLE_NAVIGATION_STATUS: NavigationStatus = {};
+const PENDING_NAVIGATION_STATUS: NavigationStatus = { pending: true };
+
+type NavigationStatusEntry = {
+  ref: RefObject<Element | null>;
+  setOptimisticStatus: (status: NavigationStatus) => void;
+};
+type NavigationStatusRegisterFn = (
+  id: string,
+  entry: NavigationStatusEntry,
+) => () => void;
+
+const noopStatusRegister: NavigationStatusRegisterFn = () => () => {};
+const NavigationStatusRegistryContext = createContext<{
+  register: NavigationStatusRegisterFn;
+}>({ register: noopStatusRegister });
+
+function useNavigationStatus<
+  E extends Element = Element,
+>(): NavigationStatus & { ref: RefObject<E | null> } {
+  const [status, setOptimisticStatus] = useOptimistic(IDLE_NAVIGATION_STATUS);
+  const ref = useRef<E | null>(null);
+  const { register } = useContext(NavigationStatusRegistryContext);
+  const id = useId();
+  useLayoutEffect(
+    () => register(id, { ref, setOptimisticStatus }),
+    [id, register, setOptimisticStatus],
+  );
+  return { ...status, ref };
+}
+export { useNavigationStatus as unstable_useNavigationStatus };
+
 function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   const refetch = useRefetch();
   const elementsPromise = useElementsPromise();
@@ -250,6 +305,16 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
       registryRef.current.delete(id);
     };
   }, []);
+  const statusRegistryRef = useRef(new Map<string, NavigationStatusEntry>());
+  const registerNavigationStatus = useCallback<NavigationStatusRegisterFn>(
+    (id, entry) => {
+      statusRegistryRef.current.set(id, entry);
+      return () => {
+        statusRegistryRef.current.delete(id);
+      };
+    },
+    [],
+  );
   // Adds the X-Waku-Router-Skip header mapping element ids to the etags we
   // already hold, so the server can skip re-rendering elements whose etag
   // still matches. Shared by navigate + prefetch.
@@ -389,11 +454,13 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
         source?.closest?.(`a[${PENDING_ATTR}]`)?.getAttribute(PENDING_ATTR) ??
         null;
       // Prefer the source-element match (most precise: tied to the actual
-      // clicked <a>). For programmatic push/replace and browser back/forward
-      // there's no sourceElement, so fall back to any <Pending> whose
-      // wrapped <a>'s href resolves to this destination path.
+      // clicked <a>). Only when there is no source element at all --
+      // programmatic push/replace and browser back/forward -- fall back to
+      // any <Pending> whose wrapped <a>'s href resolves to this destination
+      // path. A click on some other, unwrapped <a> must not light up a
+      // <Pending> that merely shares the destination.
       let registered = id ? registryRef.current.get(id) : undefined;
-      if (!registered) {
+      if (!registered && !source) {
         for (const entry of registryRef.current.values()) {
           if (
             entry.href !== undefined &&
@@ -405,14 +472,39 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
           }
         }
       }
+      // Collect the navigation-status hooks whose enclosing <a> initiated
+      // (or, lacking a sourceElement, points at) this navigation. Resolved
+      // here -- synchronously during event dispatch -- and flipped to
+      // pending inside the transition below, where React keeps the
+      // optimistic value alive until the new route commits.
+      const sourceAnchor = source?.closest?.('a') ?? null;
+      const matchedStatusSetters: NavigationStatusEntry['setOptimisticStatus'][] =
+        [];
+      for (const entry of statusRegistryRef.current.values()) {
+        const anchor = entry.ref.current?.closest('a');
+        if (!anchor) continue;
+        const href = anchor.getAttribute('href');
+        const matched = sourceAnchor
+          ? anchor === sourceAnchor
+          : href !== null &&
+            new URL(href, window.location.href).pathname === nextRoute.path;
+        if (matched) matchedStatusSetters.push(entry.setOptimisticStatus);
+      }
+      // Route changes always run in a transition: a matched <Pending>'s so
+      // its isPending tracks the navigation, otherwise React's default one.
+      // The transition is what keeps the previous page visible while the
+      // next tree suspends, and what scopes the optimistic status updates.
       const startTransition: TransitionStartFunction =
-        registered?.startTransition ?? ((fn) => fn());
+        registered?.startTransition ?? defaultStartTransition;
       event.intercept({
         ...(suppressScroll ? { scroll: 'manual' as const } : {}),
         handler: () =>
           new Promise<void>((resolve, reject) => {
             startTransition(async () => {
               try {
+                for (const setOptimisticStatus of matchedStatusSetters) {
+                  setOptimisticStatus(PENDING_NAVIGATION_STATUS);
+                }
                 let targetRoute = nextRoute;
                 try {
                   if (!staticPathSetRef.current.has(nextRoute.path)) {
@@ -440,8 +532,16 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                     throw err;
                   }
                 }
-                setRenderError(null);
-                setRoute(targetRoute);
+                // Updates after the first await lose the enclosing
+                // transition context (https://react.dev/reference/react/startTransition#starttransition-caveats),
+                // so re-wrap: the route change must render as a transition
+                // for the previous page to stay visible while the next tree
+                // suspends, and for the optimistic status updates above to
+                // stay alive until it commits.
+                defaultStartTransition(() => {
+                  setRenderError(null);
+                  setRoute(targetRoute);
+                });
                 emitRouteEvent('complete', targetRoute);
                 resolve();
               } catch (err) {
@@ -475,9 +575,13 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   return (
     <RouterContext.Provider value={routerCtxValue}>
       <PendingRegistryContext.Provider value={{ register }}>
-        <Slot id="root">
-          <Slot id={getRouteSlotId(route.path)} />
-        </Slot>
+        <NavigationStatusRegistryContext.Provider
+          value={{ register: registerNavigationStatus }}
+        >
+          <Slot id="root">
+            <Slot id={getRouteSlotId(route.path)} />
+          </Slot>
+        </NavigationStatusRegistryContext.Provider>
       </PendingRegistryContext.Provider>
     </RouterContext.Provider>
   );

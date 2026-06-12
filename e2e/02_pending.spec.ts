@@ -131,6 +131,62 @@ test('Pending lights up on browser back/forward to a matching href', async ({
   await expect(page.getByTestId('pending')).toHaveCount(0);
 });
 
+test('useNavigationStatus: pending inside the clicked <a>, through client suspense', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('nav-status')).toHaveCount(0);
+
+  await page.locator('a', { hasText: 'Slow (status)' }).click();
+  await expect(page.getByTestId('nav-status')).toBeVisible();
+  // Clicks match by anchor identity, so the <Pending>s around the other
+  // /slow links must stay dark.
+  await expect(page.getByTestId('pending')).toHaveCount(0);
+  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
+  await expect(page.locator('h1')).toHaveText('Home');
+
+  // Comfortably past the ~500ms server response; the client suspense keeps
+  // the transition (and therefore the optimistic pending state) alive.
+  await page.waitForTimeout(700);
+  await expect(page.getByTestId('nav-status')).toBeVisible();
+  await expect(page.locator('h1')).toHaveText('Home');
+
+  // The optimistic state reverts in the same commit that reveals the route.
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('nav-status')).toHaveCount(0);
+});
+
+test('useNavigationStatus: stays dark when a different link to the same href is clicked', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+
+  await page.getByRole('link', { name: 'Slow', exact: true }).click();
+  await expect(page.getByTestId('pending')).toBeVisible();
+  await expect(page.getByTestId('nav-status')).toHaveCount(0);
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('nav-status')).toHaveCount(0);
+});
+
+test('useNavigationStatus: lights up for programmatic navigation matching the href', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('nav-status')).toHaveCount(0);
+
+  // No sourceElement; the hook's enclosing <a> points at the destination.
+  await page.evaluate(() => {
+    void window.navigation.navigate('/slow').finished;
+  });
+  await expect(page.getByTestId('nav-status')).toBeVisible();
+  await expect(page.locator('h1')).toHaveText('Home');
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('nav-status')).toHaveCount(0);
+});
+
 test('pending stays true through nested client-side Suspense, not just the server response', async ({
   page,
 }) => {

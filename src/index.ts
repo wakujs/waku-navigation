@@ -1,1 +1,7 @@
-export { Pending, Router, Slice, useRouter } from './client.js';
+export {
+  Pending,
+  Router,
+  Slice,
+  unstable_useNavigationStatus,
+  useRouter,
+} from './client.js';

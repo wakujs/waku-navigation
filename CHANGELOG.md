@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `unstable_useNavigationStatus`: a `useFormStatus`-style hook reporting whether a navigation initiated by the enclosing `<a>` is in flight (counterpart of waku's `useNavigationStatus_UNSTABLE`, with a `ref` to locate the anchor)
+
+### Changed
+
+- Route changes now always run in a React transition (previously only when a `<Pending>` matched)
+- A click on an unwrapped `<a>` no longer lights up a `<Pending>` that merely shares the destination href
+
 ### Changed
 
 - update waku v1.0.0-beta.3 #2

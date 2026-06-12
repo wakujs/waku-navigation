@@ -39,7 +39,7 @@ Pages and `pages/_slices/*` work exactly as in any Waku app — `waku-navigation
 ## Examples
 
 - `examples/01_minimal` — `useRouter`, `<Slice>`, 404, prefetch, scroll option, events, HMR ([StackBlitz](https://stackblitz.com/github/wakujs/waku-navigation/tree/main/examples/01_minimal))
-- `examples/02_pending` — `<Pending>` for slow routes, client-suspense settling
+- `examples/02_pending` — `<Pending>` for slow routes, `unstable_useNavigationStatus`, client-suspense settling
 
 ---
 
@@ -100,6 +100,30 @@ For navigations that have no `sourceElement` — `useRouter().push('/slow')`, `n
 
 `<Pending>` only shows its fallback for the actual route change; React's transition keeps the previous page visible until the new tree (including any client-side `<Suspense>` boundaries) is ready to commit.
 
+### `unstable_useNavigationStatus()`
+
+```tsx
+'use client';
+import { unstable_useNavigationStatus } from 'waku-navigation';
+
+function MenuItem() {
+  const { pending, ref } = unstable_useNavigationStatus<HTMLAnchorElement>();
+  return (
+    <a href="/slow" ref={ref}>
+      Slow {pending ? '…' : ''}
+    </a>
+  );
+}
+```
+
+The counterpart of `waku/router/client`'s `useNavigationStatus_UNSTABLE`: a `useFormStatus`-style hook that reports whether a navigation initiated by the enclosing `<a>` is in flight. `pending` turns `true` the moment the navigation starts and clears in the same commit that reveals the new route — after the destination's client-side `<Suspense>` boundaries settle, and also on abort or error.
+
+One difference from upstream: with no `<Link>` to provide context, a hook cannot locate its own DOM position, so it returns a `ref` — attach it to any element the component renders (the `<a>` itself or any descendant) and the router resolves the enclosing `<a>` via `closest('a')` at navigation time. Without an attached ref, an enclosing `<a>`, or a surrounding `<Router>`, `pending` stays `undefined`.
+
+Matching follows the same rules as `<Pending>`: clicks match by anchor identity (`event.sourceElement`), so two `<a>`s with the same href stay independent; programmatic and back/forward navigations (which have no source element) match the anchor's href against the destination path. Hash-only navigations complete instantly and never set `pending`.
+
+Internally each hook holds a `useOptimistic` state that the router flips to pending inside the navigation transition, so React renders the indicator urgently and reverts it automatically when the transition settles — there is no subscription or cleanup to manage.
+
 ### `<Slice>`
 
 ```tsx
@@ -134,15 +158,15 @@ import { Slice } from 'waku-navigation';
 
 The Navigation API intercepts same-origin `<a>` clicks for you. Cross-origin links, hash-only links, download links, and modifier-keyed clicks all behave correctly without `<Link>`. Specific `<Link>` props translate as follows:
 
-| `<Link>` prop                | `<a>` / `waku-navigation` equivalent                                                   |
-| ---------------------------- | -------------------------------------------------------------------------------------- |
-| `to="/x"`                    | `href="/x"`                                                                            |
-| `scroll={false}`             | Click handler that calls `useRouter().push(href, { scroll: false })`                   |
-| `unstable_pending={node}`    | Wrap the `<a>` in `<Pending fallback={node}>`                                          |
-| `unstable_notPending={node}` | No direct equivalent yet — render conditionally based on `useRouter().unstable_events` |
-| `unstable_prefetchOnEnter`   | `onMouseEnter={() => useRouter().prefetch(href)}` in a client component                |
-| `unstable_prefetchOnView`    | `IntersectionObserver` + `useRouter().prefetch(href)`                                  |
-| `unstable_startTransition`   | Not needed — the router uses `useTransition` internally                                |
+| `<Link>` prop                | `<a>` / `waku-navigation` equivalent                                    |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `to="/x"`                    | `href="/x"`                                                             |
+| `scroll={false}`             | Click handler that calls `useRouter().push(href, { scroll: false })`    |
+| `unstable_pending={node}`    | Wrap the `<a>` in `<Pending fallback={node}>`                           |
+| `unstable_notPending={node}` | `unstable_useNavigationStatus()` — render `node` when `!pending`        |
+| `unstable_prefetchOnEnter`   | `onMouseEnter={() => useRouter().prefetch(href)}` in a client component |
+| `unstable_prefetchOnView`    | `IntersectionObserver` + `useRouter().prefetch(href)`                   |
+| `unstable_startTransition`   | Not needed — the router uses `useTransition` internally                 |
 
 Example for prefetch-on-hover:
 
@@ -247,7 +271,7 @@ These are all handled inside the navigate-event listener so apps usually don't n
 
 ## Caveats / not yet implemented
 
-- `<Link>` is not provided. Plain `<a>` covers the same default behavior; the `unstable_*` Link niceties (`unstable_notPending`, custom `unstable_startTransition`) need a small client component if you want them.
+- `<Link>` is not provided. Plain `<a>` covers the same default behavior; the `unstable_*` Link niceties (`unstable_notPending` via `unstable_useNavigationStatus`, custom `unstable_startTransition`) need a small client component if you want them.
 - `unstable_routeInterceptor` (server-side route rewrite hook) is not supported.
 - `unstable_fetchRscStore` (custom RSC store) is not exposed on `<Router>`.
 - Requires a browser with the Navigation API. There is currently no fallback for older browsers.
