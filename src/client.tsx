@@ -3,10 +3,8 @@
 'use client';
 
 import {
-  Children,
-  cloneElement,
   createContext,
-  isValidElement,
+  startTransition,
   use,
   useCallback,
   useContext,
@@ -14,12 +12,9 @@ import {
   useId,
   useLayoutEffect,
   useMemo,
+  useOptimistic,
   useRef,
   useState,
-  useTransition,
-  type ReactElement,
-  type ReactNode,
-  type TransitionStartFunction,
 } from 'react';
 import { preloadModule } from 'react-dom';
 import {
@@ -51,27 +46,38 @@ type Elements = Record<string, unknown>;
 type Route = { path: string; query: string; hash: string };
 
 const NOT_FOUND_PATH = '/404';
-const PENDING_ATTR = 'data-waku-pending';
+// Authored by the app on a plain <a> to correlate it with a navigation-status
+// consumer, the way <label htmlFor> correlates with <input id>. The router
+// reads it off the clicked <a> (or, for programmatic navs, off the matching
+// <a> in the DOM) to know which consumers to mark pending.
+const NAV_KEY_ATTR = 'data-nav-key';
 // Mirrors ETAG_ID_PREFIX in waku's router/common.js, which is not exported
 // from waku/router/client. Elements under this prefix carry the etag for the
 // same-named slot; the X-Waku-Router-Skip header echoes them back so the
 // server can skip re-rendering unchanged slots.
 const ETAG_ID_PREFIX = 'ETAG:';
 
-// Each <Pending> generates a unique id via useId and stamps the child <a>
-// with data-waku-pending=<id>. The Router listens to document clicks for any
-// element with that attribute and remembers the id, then -- when the
-// navigate event fires -- looks up THAT <Pending>'s startTransition. So two
-// <Pending>s pointing at the same href stay independent, and isPending lights
-// up only on the one that was actually clicked.
-type PendingEntry = {
-  href: string | undefined;
-  startTransition: TransitionStartFunction;
+// Navigation-status registry. Each useNavigationStatus_UNSTABLE(match) call
+// registers its useOptimistic setter under a unique instance id, tagged with
+// the match it cares about -- a destination `href`, a `dataNavKey` (matching an
+// <a data-nav-key>), or both. On navigate, the router flips every matching
+// entry to pending; React reverts it when the transition commits (after
+// client-side Suspense), aborts, or errors. Several consumers may share a
+// match -- all of them light up together.
+type NavigationStatus = { pending?: boolean };
+// At least one matcher is required -- {} would silently never go pending.
+type NavStatusMatch =
+  | { href: string; dataNavKey?: string }
+  | { href?: string; dataNavKey: string };
+type NavStatusEntry = {
+  href?: string | undefined;
+  dataNavKey?: string | undefined;
+  setOptimisticStatus: (status: NavigationStatus) => void;
 };
-type RegisterFn = (id: string, entry: PendingEntry) => () => void;
+type RegisterFn = (id: string, entry: NavStatusEntry) => () => void;
 
 const noopRegister: RegisterFn = () => () => {};
-const PendingRegistryContext = createContext<{ register: RegisterFn }>({
+const NavStatusRegistryContext = createContext<{ register: RegisterFn }>({
   register: noopRegister,
 });
 
@@ -132,47 +138,53 @@ export function useRouter() {
   };
 }
 
-export function Pending({
-  fallback,
-  children,
-}: {
-  fallback: ReactNode;
-  children: ReactNode;
-}) {
-  const [isPending, startTransition] = useTransition();
-  const { register } = useContext(PendingRegistryContext);
+// Counterpart of waku/router/client's useNavigationStatus_UNSTABLE, adapted
+// for plain <a>. Two ways to say which navigation you care about:
+//
+//   { href: '/slow' }   -- any navigation whose destination is /slow. Nothing
+//                          extra on the <a>; matches by destination, so every
+//                          anchor to /slow shares it (no independence).
+//   { dataNavKey: 'x' }  -- the navigation from <a data-nav-key="x">. Tells two
+//                          same-href anchors apart (give them different ids;
+//                          useId() for list-rendered ones).
+//
+// Pass both to match either. The consumer can live anywhere -- inside the <a>,
+// beside it, or far away. Returns { pending: undefined } until a matching
+// navigation is in flight; pending clears when the new route commits (after
+// client-side Suspense), or on abort/error.
+function useNavigationStatus({
+  href,
+  dataNavKey,
+}: NavStatusMatch): NavigationStatus {
+  const [status, setOptimisticStatus] = useOptimistic<NavigationStatus>({});
+  const { register } = useContext(NavStatusRegistryContext);
   const id = useId();
-  const stamped = Children.map(children, (child) => {
-    if (isValidElement(child) && child.type === 'a') {
-      return cloneElement(child as ReactElement<Record<string, unknown>>, {
-        [PENDING_ATTR]: id,
-      });
-    }
-    return child;
-  });
-  // Capture the wrapped <a>'s href so that programmatic / back-forward
-  // navigations (which have no event.sourceElement) can still find their
-  // Pending by matching the destination path.
-  const href = Children.toArray(children)
-    .map((child) => {
-      if (isValidElement(child) && child.type === 'a') {
-        const { href: h } = child.props as { href?: unknown };
-        return typeof h === 'string' ? h : undefined;
-      }
-      return undefined;
-    })
-    .find((h): h is string => h !== undefined);
   useLayoutEffect(
-    () => register(id, { href, startTransition }),
-    [id, href, register, startTransition],
+    () => register(id, { href, dataNavKey, setOptimisticStatus }),
+    [id, href, dataNavKey, register, setOptimisticStatus],
   );
-  return (
-    <>
-      {stamped}
-      {isPending ? fallback : null}
-    </>
-  );
+  return status;
 }
+export { useNavigationStatus as useNavigationStatus_UNSTABLE };
+
+// True when `href` (possibly relative) resolves to the same internal route as
+// `route`. Compared on origin + path + query -- not just pathname -- so
+// /search?q=a doesn't match /search?q=b, and a cross-origin href that happens
+// to share a path doesn't match an internal navigation. The fragment is
+// ignored (hash-only navigations never set pending). Malformed input returns
+// false rather than throwing, so a bad consumer href or odd DOM anchor can't
+// break the navigation handler.
+const routeMatchesHref = (href: string, route: Route): boolean => {
+  let url: URL;
+  try {
+    url = new URL(href, window.location.href);
+  } catch {
+    return false;
+  }
+  if (url.origin !== window.location.origin) return false;
+  const parsed = parseRoute(url);
+  return parsed.path === route.path && parsed.query === route.query;
+};
 
 function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   const refetch = useRefetch();
@@ -185,7 +197,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     // /404 page resolves to '/404' here. Suspending on `use` is free at this
     // point -- the slots below suspend on the same promise during hydration
     // -- but it must not happen on later renders: suspending InnerRouter
-    // inside a <Pending> transition keeps the navigation from ever
+    // inside the navigation transition keeps the navigation from ever
     // committing. The hash starts as '' to match Waku's INTERNAL_ServerRouter
     // SSR output (URL fragments aren't sent to the server) and is upgraded
     // post-hydration in the effect below.
@@ -212,7 +224,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     // Only on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const registryRef = useRef(new Map<string, PendingEntry>());
+  const registryRef = useRef(new Map<string, NavStatusEntry>());
   const staticPathSetRef = useRef(new Set<string>());
   const cachedEtagsRef = useRef<Record<string, string>>({});
   // Stable Set so Waku's <Slice> can mutate it (add on fetch start, delete on
@@ -385,34 +397,42 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
       const signal = event.signal;
       const source = (event as NavigateEvent & { sourceElement?: Element })
         .sourceElement;
-      const id =
-        source?.closest?.(`a[${PENDING_ATTR}]`)?.getAttribute(PENDING_ATTR) ??
+      // Resolve the navigating <a>'s data-nav-key (for dataNavKey matching):
+      // the clicked <a> (most precise, so two same-href anchors stay
+      // independent), or -- for programmatic push/replace and browser
+      // back/forward, which have no sourceElement -- the first nav-key anchor in
+      // the live DOM whose href resolves to the destination. href matching
+      // needs none of this; it keys off the destination route directly.
+      let navDataKey =
+        source?.closest?.(`a[${NAV_KEY_ATTR}]`)?.getAttribute(NAV_KEY_ATTR) ??
         null;
-      // Prefer the source-element match (most precise: tied to the actual
-      // clicked <a>). For programmatic push/replace and browser back/forward
-      // there's no sourceElement, so fall back to any <Pending> whose
-      // wrapped <a>'s href resolves to this destination path.
-      let registered = id ? registryRef.current.get(id) : undefined;
-      if (!registered) {
-        for (const entry of registryRef.current.values()) {
-          if (
-            entry.href !== undefined &&
-            new URL(entry.href, window.location.href).pathname ===
-              nextRoute.path
-          ) {
-            registered = entry;
+      if (navDataKey === null && !source) {
+        for (const anchor of document.querySelectorAll(`a[${NAV_KEY_ATTR}]`)) {
+          const href = anchor.getAttribute('href');
+          if (href !== null && routeMatchesHref(href, nextRoute)) {
+            navDataKey = anchor.getAttribute(NAV_KEY_ATTR);
             break;
           }
         }
       }
-      const startTransition: TransitionStartFunction =
-        registered?.startTransition ?? ((fn) => fn());
+      const pendingSetters: NavStatusEntry['setOptimisticStatus'][] = [];
+      for (const entry of registryRef.current.values()) {
+        const byKey =
+          entry.dataNavKey !== undefined && entry.dataNavKey === navDataKey;
+        const byHref =
+          entry.href !== undefined && routeMatchesHref(entry.href, nextRoute);
+        if (byKey || byHref) pendingSetters.push(entry.setOptimisticStatus);
+      }
       event.intercept({
         ...(suppressScroll ? { scroll: 'manual' as const } : {}),
         handler: () =>
           new Promise<void>((resolve, reject) => {
+            // Always a transition: it keeps the previous page visible while the
+            // next tree suspends, and scopes the optimistic pending updates so
+            // React reverts them on commit/abort/error.
             startTransition(async () => {
               try {
+                for (const set of pendingSetters) set({ pending: true });
                 let targetRoute = nextRoute;
                 try {
                   if (!staticPathSetRef.current.has(nextRoute.path)) {
@@ -440,8 +460,15 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                     throw err;
                   }
                 }
-                setRenderError(null);
-                setRoute(targetRoute);
+                // Updates after the first await lose the enclosing transition
+                // scope (https://react.dev/reference/react/startTransition#caveats),
+                // so re-wrap the commit -- otherwise it renders urgently and
+                // the optimistic pending state reverts before the new tree is
+                // ready.
+                startTransition(() => {
+                  setRenderError(null);
+                  setRoute(targetRoute);
+                });
                 emitRouteEvent('complete', targetRoute);
                 resolve();
               } catch (err) {
@@ -474,11 +501,11 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   );
   return (
     <RouterContext.Provider value={routerCtxValue}>
-      <PendingRegistryContext.Provider value={{ register }}>
+      <NavStatusRegistryContext.Provider value={{ register }}>
         <Slot id="root">
           <Slot id={getRouteSlotId(route.path)} />
         </Slot>
-      </PendingRegistryContext.Provider>
+      </NavStatusRegistryContext.Provider>
     </RouterContext.Provider>
   );
 }
