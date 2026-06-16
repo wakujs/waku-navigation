@@ -10,7 +10,9 @@ export function NavStatus({
   testid,
   label,
 }: {
-  match: { href?: string; dataNavKey?: string };
+  match:
+    | { href: string; dataNavKey?: string }
+    | { href?: string; dataNavKey: string };
   testid: string;
   label: string;
 }) {

@@ -220,6 +220,42 @@ test('useNavigationStatus: { href } matching also fires for a different anchor t
   await expect(page.getByTestId('status-href')).toHaveCount(0);
 });
 
+test('useNavigationStatus: { href } matching is by path + query, not pathname alone', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('status-qa')).toHaveCount(0);
+  await expect(page.getByTestId('status-qb')).toHaveCount(0);
+
+  // Navigate to /slow?from=b. Same /slow pathname as the q=a consumer, but a
+  // different query, so only the q=b consumer lights up.
+  await page.getByRole('link', { name: 'Slow (q=b)', exact: true }).click();
+  await expect(page.getByTestId('status-qb')).toBeVisible();
+  await expect(page.getByTestId('status-qa')).toHaveCount(0);
+  // The bare { href: '/slow' } consumer (no query) also stays dark.
+  await expect(page.getByTestId('status-href')).toHaveCount(0);
+  await expect(page).toHaveURL('/slow?from=b');
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('status-qb')).toHaveCount(0);
+});
+
+test('useNavigationStatus: { href } matching is same-origin only', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('status-cross')).toHaveCount(0);
+
+  // Navigate to the internal /slow. A consumer that declared a cross-origin
+  // href with the same /slow path must stay dark; the internal one lights.
+  await page.getByRole('link', { name: 'Slow (href)', exact: true }).click();
+  await expect(page.getByTestId('status-href')).toBeVisible();
+  await expect(page.getByTestId('status-cross')).toHaveCount(0);
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('status-cross')).toHaveCount(0);
+});
+
 test('pending stays true through nested client-side Suspense, not just the server response', async ({
   page,
 }) => {

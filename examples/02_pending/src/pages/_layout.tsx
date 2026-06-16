@@ -52,12 +52,37 @@ export default function Layout({ children }: { children: ReactNode }) {
             />
           </a>
         </li>
+        <li>
+          {/* href matching is by path + query: same /slow path, different
+              query strings stay independent. */}
+          <a href="/slow?from=a">Slow (q=a)</a>
+          <NavStatus
+            match={{ href: '/slow?from=a' }}
+            testid="status-qa"
+            label="Loading a…"
+          />
+        </li>
+        <li>
+          <a href="/slow?from=b">Slow (q=b)</a>
+          <NavStatus
+            match={{ href: '/slow?from=b' }}
+            testid="status-qb"
+            label="Loading b…"
+          />
+        </li>
       </ul>
       {/* Matches no <a> and no destination here: this never reports pending. */}
       <NavStatus
         match={{ dataNavKey: 'unused' }}
         testid="nav-status-outside"
         label="(navigating…)"
+      />
+      {/* Cross-origin href with the same /slow path: must stay same-origin and
+          never match an internal navigation. */}
+      <NavStatus
+        match={{ href: 'https://example.com/slow' }}
+        testid="status-cross"
+        label="(cross)"
       />
       <main>{children}</main>
     </>

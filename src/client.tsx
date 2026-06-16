@@ -65,11 +65,13 @@ const ETAG_ID_PREFIX = 'ETAG:';
 // client-side Suspense), aborts, or errors. Several consumers may share a
 // match -- all of them light up together.
 type NavigationStatus = { pending?: boolean };
-type NavStatusMatch = {
+// At least one matcher is required -- {} would silently never go pending.
+type NavStatusMatch =
+  | { href: string; dataNavKey?: string }
+  | { href?: string; dataNavKey: string };
+type NavStatusEntry = {
   href?: string | undefined;
   dataNavKey?: string | undefined;
-};
-type NavStatusEntry = NavStatusMatch & {
   setOptimisticStatus: (status: NavigationStatus) => void;
 };
 type RegisterFn = (id: string, entry: NavStatusEntry) => () => void;
@@ -164,6 +166,17 @@ function useNavigationStatus({
   return status;
 }
 export { useNavigationStatus as useNavigationStatus_UNSTABLE };
+
+// True when `href` (possibly relative) resolves to the same internal route as
+// `route`. Compared on origin + path + query -- not just pathname -- so
+// /search?q=a doesn't match /search?q=b, and a cross-origin href that happens
+// to share a path doesn't match an internal navigation.
+const routeMatchesHref = (href: string, route: Route): boolean => {
+  const url = new URL(href, window.location.href);
+  if (url.origin !== window.location.origin) return false;
+  const parsed = parseRoute(url);
+  return parsed.path === route.path && parsed.query === route.query;
+};
 
 function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   const refetch = useRefetch();
@@ -381,17 +394,14 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
       // independent), or -- for programmatic push/replace and browser
       // back/forward, which have no sourceElement -- the first nav-key anchor in
       // the live DOM whose href resolves to the destination. href matching
-      // needs none of this; it keys off the destination path directly.
+      // needs none of this; it keys off the destination route directly.
       let navDataKey =
         source?.closest?.(`a[${NAV_KEY_ATTR}]`)?.getAttribute(NAV_KEY_ATTR) ??
         null;
       if (navDataKey === null && !source) {
         for (const anchor of document.querySelectorAll(`a[${NAV_KEY_ATTR}]`)) {
           const href = anchor.getAttribute('href');
-          if (
-            href !== null &&
-            new URL(href, window.location.href).pathname === nextRoute.path
-          ) {
+          if (href !== null && routeMatchesHref(href, nextRoute)) {
             navDataKey = anchor.getAttribute(NAV_KEY_ATTR);
             break;
           }
@@ -399,12 +409,11 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
       }
       const pendingSetters: NavStatusEntry['setOptimisticStatus'][] = [];
       for (const entry of registryRef.current.values()) {
-        const byId =
+        const byKey =
           entry.dataNavKey !== undefined && entry.dataNavKey === navDataKey;
         const byHref =
-          entry.href !== undefined &&
-          new URL(entry.href, window.location.href).pathname === nextRoute.path;
-        if (byId || byHref) pendingSetters.push(entry.setOptimisticStatus);
+          entry.href !== undefined && routeMatchesHref(entry.href, nextRoute);
+        if (byKey || byHref) pendingSetters.push(entry.setOptimisticStatus);
       }
       event.intercept({
         ...(suppressScroll ? { scroll: 'manual' as const } : {}),
