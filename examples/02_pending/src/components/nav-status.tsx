@@ -1,6 +1,6 @@
 'use client';
 
-import { unstable_useNavigationStatus } from 'waku-navigation';
+import { useNavigationStatus_UNSTABLE } from 'waku-navigation';
 
 // Shows `label` while a matching navigation is in flight. `match` is either
 // { href } (any navigation to that destination) or { dataNavKey } (the specific
@@ -14,6 +14,6 @@ export function NavStatus({
   testid: string;
   label: string;
 }) {
-  const { pending } = unstable_useNavigationStatus(match);
+  const { pending } = useNavigationStatus_UNSTABLE(match);
   return pending ? <span data-testid={testid}> {label}</span> : null;
 }

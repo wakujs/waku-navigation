@@ -39,7 +39,7 @@ Pages and `pages/_slices/*` work exactly as in any Waku app — `waku-navigation
 ## Examples
 
 - `examples/01_minimal` — `useRouter`, `<Slice>`, 404, prefetch, scroll option, events, HMR ([StackBlitz](https://stackblitz.com/github/wakujs/waku-navigation/tree/main/examples/01_minimal))
-- `examples/02_pending` — `unstable_useNavigationStatus` pending indicators on plain `<a>` for slow routes, client-suspense settling
+- `examples/02_pending` — `useNavigationStatus_UNSTABLE` pending indicators on plain `<a>` for slow routes, client-suspense settling
 
 ---
 
@@ -84,23 +84,23 @@ Notes:
 - `scroll: false` is forwarded to the navigate event via the Navigation API's `info` channel, which is not persisted in history. The internal handler then intercepts with `scroll: 'manual'` so the browser skips its default after-transition scroll.
 - `prefetch(to)` calls `unstable_prefetchRsc` and, if the build publishes a `__WAKU_ROUTER_PREFETCH__` helper, preloads the route's JS chunks via `react-dom`'s `preloadModule`.
 
-### `unstable_useNavigationStatus({ href?, dataNavKey? })`
+### `useNavigationStatus_UNSTABLE({ href?, dataNavKey? })`
 
 There is no `<Link>` — plain `<a>` navigates (the Navigation API intercepts same-origin clicks; see [`<Link>` → plain `<a>`](#link--plain-a)). The one thing a bare `<a>` can't express is per-link _pending_ state, because the indicator needs to bind a DOM anchor to React state. This hook supplies that binding, two ways:
 
 ```tsx
 'use client';
-import { unstable_useNavigationStatus } from 'waku-navigation';
+import { useNavigationStatus_UNSTABLE } from 'waku-navigation';
 
 // (a) by destination href — nothing extra on the <a>:
 function NavSpinner({ href }: { href: string }) {
-  const { pending } = unstable_useNavigationStatus({ href });
+  const { pending } = useNavigationStatus_UNSTABLE({ href });
   return pending ? <span>…</span> : null;
 }
 
 // (b) by data-nav-key — distinguishes two same-href anchors:
 function IdSpinner({ dataNavKey }: { dataNavKey: string }) {
-  const { pending } = unstable_useNavigationStatus({ dataNavKey });
+  const { pending } = useNavigationStatus_UNSTABLE({ dataNavKey });
   return pending ? <span>…</span> : null;
 }
 ```
@@ -176,7 +176,7 @@ Specific `<Link>` props translate as follows:
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `to="/x"`                    | `<a href="/x">`                                                                                               |
 | `scroll={false}`             | Click handler that calls `useRouter().push(href, { scroll: false })`                                          |
-| `unstable_pending={node}`    | A consumer using `unstable_useNavigationStatus({ href })` (or `{ dataNavKey }`) to render `node` when pending |
+| `unstable_pending={node}`    | A consumer using `useNavigationStatus_UNSTABLE({ href })` (or `{ dataNavKey }`) to render `node` when pending |
 | `unstable_notPending={node}` | Same, rendering `node` when `!pending`                                                                        |
 | `unstable_prefetchOnEnter`   | `onMouseEnter={() => useRouter().prefetch(href)}` in a client component                                       |
 | `unstable_prefetchOnView`    | `IntersectionObserver` + `useRouter().prefetch(href)`                                                         |
@@ -210,12 +210,12 @@ export function PrefetchLink({
 
 ```diff
 - import { Link, useNavigationStatus_UNSTABLE } from 'waku/router/client';
-+ import { unstable_useNavigationStatus } from 'waku-navigation';
++ import { useNavigationStatus_UNSTABLE } from 'waku-navigation';
 
 - function NavSpinner() {
 -   const { pending } = useNavigationStatus_UNSTABLE();
 + function NavSpinner({ href }: { href: string }) {
-+   const { pending } = unstable_useNavigationStatus({ href });
++   const { pending } = useNavigationStatus_UNSTABLE({ href });
     return pending ? <span>…</span> : null;
   }
 
@@ -306,7 +306,7 @@ These are all handled inside the navigate-event listener so apps usually don't n
 
 ## Caveats / not yet implemented
 
-- No `<Link>` component — navigation is just plain `<a>`. Pending status is opt-in via `unstable_useNavigationStatus({ href })` (by destination) or `{ dataNavKey }` (by `data-nav-key`, for same-href independence). The `<Link>` niceties (`scroll`, `unstable_prefetchOnEnter`/`OnView`) compose from `useRouter().push(href, { scroll })` / `useRouter().prefetch(href)`.
+- No `<Link>` component — navigation is just plain `<a>`. Pending status is opt-in via `useNavigationStatus_UNSTABLE({ href })` (by destination) or `{ dataNavKey }` (by `data-nav-key`, for same-href independence). The `<Link>` niceties (`scroll`, `unstable_prefetchOnEnter`/`OnView`) compose from `useRouter().push(href, { scroll })` / `useRouter().prefetch(href)`.
 - `unstable_routeInterceptor` (server-side route rewrite hook) is not supported.
 - `unstable_fetchRscStore` (custom RSC store) is not exposed on `<Router>`.
 - Requires a browser with the Navigation API. There is currently no fallback for older browsers.

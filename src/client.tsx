@@ -57,7 +57,7 @@ const NAV_KEY_ATTR = 'data-nav-key';
 // server can skip re-rendering unchanged slots.
 const ETAG_ID_PREFIX = 'ETAG:';
 
-// Navigation-status registry. Each unstable_useNavigationStatus(match) call
+// Navigation-status registry. Each useNavigationStatus_UNSTABLE(match) call
 // registers its useOptimistic setter under a unique instance id, tagged with
 // the match it cares about -- a destination `href`, a `dataNavKey` (matching an
 // <a data-nav-key>), or both. On navigate, the router flips every matching
@@ -163,7 +163,7 @@ function useNavigationStatus({
   );
   return status;
 }
-export { useNavigationStatus as unstable_useNavigationStatus };
+export { useNavigationStatus as useNavigationStatus_UNSTABLE };
 
 function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   const refetch = useRefetch();

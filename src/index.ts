@@ -1,6 +1,6 @@
 export {
   Router,
   Slice,
-  unstable_useNavigationStatus,
+  useNavigationStatus_UNSTABLE,
   useRouter,
 } from './client.js';
