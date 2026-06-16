@@ -1,5 +1,4 @@
 export {
-  Pending,
   Router,
   Slice,
   unstable_useNavigationStatus,
