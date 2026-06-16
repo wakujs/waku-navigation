@@ -115,7 +115,7 @@ function IdSpinner({ dataNavKey }: { dataNavKey: string }) {
 
 The two match modes:
 
-- **`{ href }`** matches any navigation whose destination is that href — the consumer just names the destination, and the `<a>` needs no attribute. Matching is same-origin and compares path **and query** (not bare pathname), so `{ href: '/search?q=a' }` does not light for `/search?q=b`. The trade-off: it keys off the destination, so every anchor to the same path+query shares it (no per-anchor independence). Think `<label htmlFor>` pointing at a route rather than an element.
+- **`{ href }`** matches any navigation whose destination is that href — the consumer just names the destination, and the `<a>` needs no attribute. Matching is same-origin and compares path **and query** (not bare pathname), so `{ href: '/search?q=a' }` does not light for `/search?q=b`. The fragment is ignored: `{ href: '/slow#x' }` is treated the same as `{ href: '/slow' }` (hash-only navigations never set `pending`). The trade-off: it keys off the destination, so every anchor to the same path+query shares it (no per-anchor independence). Think `<label htmlFor>` pointing at a route rather than an element.
 - **`{ dataNavKey }`** matches the navigation from the `<a data-nav-key="…">` with that id. This is what keeps two same-href anchors independent — give them different ids. For repeated or list-rendered links, generate the id with `useId()` in the client component that renders the `<a>` and pass it to both sides:
 
   ```tsx

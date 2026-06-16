@@ -240,6 +240,21 @@ test('useNavigationStatus: { href } matching is by path + query, not pathname al
   await expect(page.getByTestId('status-qb')).toHaveCount(0);
 });
 
+test('useNavigationStatus: { href } matching ignores the fragment', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('status-hash')).toHaveCount(0);
+
+  // The consumer's href is '/slow#frag'; navigating to plain /slow still lights
+  // it, since the fragment is ignored on both sides.
+  await page.getByRole('link', { name: 'Slow (href)', exact: true }).click();
+  await expect(page.getByTestId('status-hash')).toBeVisible();
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('status-hash')).toHaveCount(0);
+});
+
 test('useNavigationStatus: { href } matching is same-origin only', async ({
   page,
 }) => {

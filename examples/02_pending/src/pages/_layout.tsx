@@ -71,6 +71,13 @@ export default function Layout({ children }: { children: ReactNode }) {
           />
         </li>
       </ul>
+      {/* href fragment is ignored: this matches any navigation to /slow
+          regardless of (or absent) a hash. */}
+      <NavStatus
+        match={{ href: '/slow#frag' }}
+        testid="status-hash"
+        label="(hash)"
+      />
       {/* Matches no <a> and no destination here: this never reports pending. */}
       <NavStatus
         match={{ dataNavKey: 'unused' }}

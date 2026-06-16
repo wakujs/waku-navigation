@@ -170,9 +170,17 @@ export { useNavigationStatus as useNavigationStatus_UNSTABLE };
 // True when `href` (possibly relative) resolves to the same internal route as
 // `route`. Compared on origin + path + query -- not just pathname -- so
 // /search?q=a doesn't match /search?q=b, and a cross-origin href that happens
-// to share a path doesn't match an internal navigation.
+// to share a path doesn't match an internal navigation. The fragment is
+// ignored (hash-only navigations never set pending). Malformed input returns
+// false rather than throwing, so a bad consumer href or odd DOM anchor can't
+// break the navigation handler.
 const routeMatchesHref = (href: string, route: Route): boolean => {
-  const url = new URL(href, window.location.href);
+  let url: URL;
+  try {
+    url = new URL(href, window.location.href);
+  } catch {
+    return false;
+  }
   if (url.origin !== window.location.origin) return false;
   const parsed = parseRoute(url);
   return parsed.path === route.path && parsed.query === route.query;
