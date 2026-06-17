@@ -14,7 +14,7 @@ async function waitForHydration(page: Page) {
   );
 }
 
-test('navigates from home to the slow page', async ({ page }) => {
+test('navigates from home to the slow page via <Link>', async ({ page }) => {
   await page.goto('/');
   await waitForHydration(page);
   await expect(page.locator('h1')).toHaveText('Home');
@@ -24,42 +24,51 @@ test('navigates from home to the slow page', async ({ page }) => {
   await expect(page).toHaveURL('/slow');
 });
 
-test("nav-status indicator shows while its <a>'s href is loading", async ({
+test("a <Link>'s status consumer reports pending while the route loads", async ({
   page,
 }) => {
   await page.goto('/');
   await waitForHydration(page);
   await expect(page.getByTestId('pending')).toHaveCount(0);
 
-  // Click Slow without awaiting the navigation; the pending indicator should
-  // be visible while the slow route's RSC streams in, then disappear once it
-  // commits.
+  // Click without awaiting; the pending indicator inside the <Link> shows while
+  // the slow route's RSC streams in, then clears once it commits.
   await page.getByRole('link', { name: 'Slow', exact: true }).click();
   await expect(page.getByTestId('pending')).toBeVisible();
-  // During this wait the previous page is still rendered.
+  // The previous page is still rendered during the load.
   await expect(page.locator('h1')).toHaveText('Home');
 
-  // Once the slow route commits, the indicator goes away and the new heading
-  // takes over.
   await expect(page.locator('h1')).toHaveText('Slow Page');
   await expect(page.getByTestId('pending')).toHaveCount(0);
 });
 
-test('nav-status indicator does not light up for navigations to other hrefs', async ({
+test('two <Link>s to the same route stay independent on click', async ({
   page,
 }) => {
-  // Start on /slow. Home is a plain <a> with no data-nav-key; the Slow links
-  // carry one.
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('pending')).toHaveCount(0);
+  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
+
+  // Only the clicked <Link> lights up -- correlated by its own element, not by
+  // the destination it shares with the others.
+  await page.getByRole('link', { name: 'Slow (alt)', exact: true }).click();
+  await expect(page.getByTestId('pending-alt')).toBeVisible();
+  await expect(page.getByTestId('pending')).toHaveCount(0);
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
+});
+
+test('a plain <a> still navigates and carries no status', async ({ page }) => {
   await page.goto('/slow');
   await waitForHydration(page);
   await expect(page.getByTestId('pending')).toHaveCount(0);
 
-  // Navigate Home -- not the destination any Slow nav-key watches, so the
-  // indicator must stay hidden.
-  await page.locator('a', { hasText: 'Home' }).click();
-  // Give any wrong-path indicator a chance to render before we assert.
+  // Home is a plain <a> -- it navigates client-side but lights no indicator.
+  await page.getByRole('link', { name: 'Home', exact: true }).click();
   await page.waitForTimeout(100);
   await expect(page.getByTestId('pending')).toHaveCount(0);
+  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
   await expect(page.locator('h1')).toHaveText('Home');
 });
 
@@ -70,60 +79,56 @@ test('previous page stays visible while the next route is loading', async ({
   await waitForHydration(page);
 
   await page.getByRole('link', { name: 'Slow', exact: true }).click();
-  // Right after clicking, the old heading should still be visible (no flash
-  // of an empty Suspense boundary -- the previous route is held).
   await expect(page.locator('h1')).toHaveText('Home');
-  // ...and eventually we land on Slow Page.
   await expect(page.locator('h1')).toHaveText('Slow Page');
 });
 
-test('two same-href anchors with distinct nav-keys stay independent', async ({
+test('pending stays true through nested client-side Suspense, not just the server response', async ({
   page,
 }) => {
-  // Both links navigate to /slow. Only the one the user actually clicked
-  // should light up its spinner.
+  // /slow waits ~500ms on the server, THEN its <SlowClientData> client
+  // component suspends another ~800ms via use(promise). The indicator must
+  // stay visible through both phases -- the new tree can't commit until the
+  // client suspense settles too.
   await page.goto('/');
   await waitForHydration(page);
-  await expect(page.getByTestId('pending')).toHaveCount(0);
-  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
 
-  await page.locator('a', { hasText: 'Slow (alt)' }).click();
-  await expect(page.getByTestId('pending-alt')).toBeVisible();
-  // The primary spinner must NOT light up for the alt click.
-  await expect(page.getByTestId('pending')).toHaveCount(0);
+  await page.getByRole('link', { name: 'Slow', exact: true }).click();
+  await page.waitForTimeout(700);
+  await expect(page.getByTestId('pending')).toBeVisible();
+  await expect(page.locator('h1')).toHaveText('Home');
+
+  await expect(page.getByTestId('slow-data')).toHaveText('client data loaded');
   await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
+  await expect(page.getByTestId('pending')).toHaveCount(0);
 });
 
-test('nav-status indicator lights up for programmatic navigation that matches its href', async ({
+test('programmatic navigation lights every <Link> to the destination', async ({
   page,
 }) => {
   await page.goto('/');
   await waitForHydration(page);
   await expect(page.getByTestId('pending')).toHaveCount(0);
 
-  // No event.sourceElement -- there's no click. The first nav-key anchor whose
-  // href resolves to /slow (the "slow" one) lights up.
+  // No source element: matched by destination, so both the plain and the
+  // prefetch <Link> to /slow light up (the view-transition one is bypassed).
   await page.evaluate(() => {
     void window.navigation.navigate('/slow').finished;
   });
   await expect(page.getByTestId('pending')).toBeVisible();
-  await expect(page.locator('h1')).toHaveText('Home');
+  await expect(page.getByTestId('pending-alt')).toBeVisible();
+  await expect(page.getByTestId('pending-vt')).toHaveCount(0);
   await expect(page.locator('h1')).toHaveText('Slow Page');
   await expect(page.getByTestId('pending')).toHaveCount(0);
 });
 
-test('nav-status indicator lights up on browser back/forward to a matching href', async ({
-  page,
-}) => {
+test('browser back/forward lights the matching <Link>', async ({ page }) => {
   await page.goto('/');
   await waitForHydration(page);
 
   await page.getByRole('link', { name: 'Slow', exact: true }).click();
   await expect(page.locator('h1')).toHaveText('Slow Page');
 
-  // Go back to /, then forward to /slow. The forward step has no source
-  // element but the destination matches the "slow" anchor's href.
   await page.goBack();
   await expect(page.locator('h1')).toHaveText('Home');
 
@@ -133,166 +138,23 @@ test('nav-status indicator lights up on browser back/forward to a matching href'
   await expect(page.getByTestId('pending')).toHaveCount(0);
 });
 
-test('useNavigationStatus: a consumer inside the clicked <a> reports pending through client suspense', async ({
+test('unstable_startTransition link navigates but bypasses status', async ({
   page,
 }) => {
   await page.goto('/');
   await waitForHydration(page);
-  await expect(page.getByTestId('nav-status')).toHaveCount(0);
+  await expect(page.getByTestId('pending-vt')).toHaveCount(0);
 
-  await page.locator('a', { hasText: 'Slow (status)' }).click();
-  await expect(page.getByTestId('nav-status')).toBeVisible();
-  // Matched by the clicked anchor's nav-key, so the indicators for the other
-  // /slow links (different nav-keys) must stay dark.
-  await expect(page.getByTestId('pending')).toHaveCount(0);
-  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
-  await expect(page.locator('h1')).toHaveText('Home');
-
-  // Comfortably past the ~500ms server response; the client suspense keeps
-  // the transition (and therefore the pending state) alive.
-  await page.waitForTimeout(700);
-  await expect(page.getByTestId('nav-status')).toBeVisible();
-  await expect(page.locator('h1')).toHaveText('Home');
-
-  // pending reverts in the same commit that reveals the new route.
+  // The view-transition <Link> wraps the commit in its own transition, so its
+  // status stays dark throughout while the navigation still completes.
+  await page
+    .getByRole('link', { name: 'Slow (view transition)', exact: true })
+    .click();
+  for (let i = 0; i < 12; i++) {
+    expect(await page.getByTestId('pending-vt').count()).toBe(0);
+    await page.waitForTimeout(50);
+  }
   await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('nav-status')).toHaveCount(0);
-});
-
-test('useNavigationStatus: stays dark when a sibling link to the same href is clicked', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-
-  await page.getByRole('link', { name: 'Slow', exact: true }).click();
-  await expect(page.getByTestId('pending')).toBeVisible();
-  await expect(page.getByTestId('nav-status')).toHaveCount(0);
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('nav-status')).toHaveCount(0);
-});
-
-test('useNavigationStatus: a consumer whose navKey matches no <a> never reports pending', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-  await expect(page.getByTestId('nav-status-outside')).toHaveCount(0);
-
-  // Drive an actual navigation; the matching consumer lights up, the one with
-  // an unused navKey must stay empty throughout.
-  await page.locator('a', { hasText: 'Slow (status)' }).click();
-  await expect(page.getByTestId('nav-status')).toBeVisible();
-  await expect(page.getByTestId('nav-status-outside')).toHaveCount(0);
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('nav-status-outside')).toHaveCount(0);
-});
-
-test('useNavigationStatus: { href } matching lights up from a plain <a> with no data-nav-key', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-  await expect(page.getByTestId('status-href')).toHaveCount(0);
-
-  // The "Slow (href)" anchor carries no data-nav-key; the consumer matches by
-  // destination alone.
-  await page.getByRole('link', { name: 'Slow (href)', exact: true }).click();
-  await expect(page.getByTestId('status-href')).toBeVisible();
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('status-href')).toHaveCount(0);
-});
-
-test('useNavigationStatus: { href } matching also fires for a different anchor to the same href', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-
-  // Click the data-nav-key="slow" anchor. The href-matched consumer (href
-  // /slow) lights up too -- it keys off the destination, not the anchor --
-  // while the dataNavKey consumers for the OTHER anchors stay dark.
-  await page.getByRole('link', { name: 'Slow', exact: true }).click();
-  await expect(page.getByTestId('status-href')).toBeVisible();
-  await expect(page.getByTestId('pending')).toBeVisible();
-  await expect(page.getByTestId('pending-alt')).toHaveCount(0);
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('status-href')).toHaveCount(0);
-});
-
-test('useNavigationStatus: { href } matching is by path + query, not pathname alone', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-  await expect(page.getByTestId('status-qa')).toHaveCount(0);
-  await expect(page.getByTestId('status-qb')).toHaveCount(0);
-
-  // Navigate to /slow?from=b. Same /slow pathname as the q=a consumer, but a
-  // different query, so only the q=b consumer lights up.
-  await page.getByRole('link', { name: 'Slow (q=b)', exact: true }).click();
-  await expect(page.getByTestId('status-qb')).toBeVisible();
-  await expect(page.getByTestId('status-qa')).toHaveCount(0);
-  // The bare { href: '/slow' } consumer (no query) also stays dark.
-  await expect(page.getByTestId('status-href')).toHaveCount(0);
-  await expect(page).toHaveURL('/slow?from=b');
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('status-qb')).toHaveCount(0);
-});
-
-test('useNavigationStatus: { href } matching ignores the fragment', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-  await expect(page.getByTestId('status-hash')).toHaveCount(0);
-
-  // The consumer's href is '/slow#frag'; navigating to plain /slow still lights
-  // it, since the fragment is ignored on both sides.
-  await page.getByRole('link', { name: 'Slow (href)', exact: true }).click();
-  await expect(page.getByTestId('status-hash')).toBeVisible();
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('status-hash')).toHaveCount(0);
-});
-
-test('useNavigationStatus: { href } matching is same-origin only', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-  await expect(page.getByTestId('status-cross')).toHaveCount(0);
-
-  // Navigate to the internal /slow. A consumer that declared a cross-origin
-  // href with the same /slow path must stay dark; the internal one lights.
-  await page.getByRole('link', { name: 'Slow (href)', exact: true }).click();
-  await expect(page.getByTestId('status-href')).toBeVisible();
-  await expect(page.getByTestId('status-cross')).toHaveCount(0);
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('status-cross')).toHaveCount(0);
-});
-
-test('pending stays true through nested client-side Suspense, not just the server response', async ({
-  page,
-}) => {
-  // /slow waits ~500ms on the server, THEN its <SlowClientData> client
-  // component suspends another ~800ms via use(promise). The indicator must
-  // stay visible through both phases -- a solution that only tracked the
-  // server response would clear it after ~500ms, but the new tree can't
-  // actually commit until the client suspense settles too.
-  await page.goto('/');
-  await waitForHydration(page);
-
-  await page.getByRole('link', { name: 'Slow', exact: true }).click();
-  // Comfortably past the server response window; the client suspense should
-  // still be in flight here.
-  await page.waitForTimeout(700);
-  await expect(page.getByTestId('pending')).toBeVisible();
-  await expect(page.locator('h1')).toHaveText('Home');
-
-  // Once everything settles, the new tree commits as a unit.
-  await expect(page.getByTestId('slow-data')).toHaveText('client data loaded');
-  await expect(page.locator('h1')).toHaveText('Slow Page');
-  await expect(page.getByTestId('pending')).toHaveCount(0);
 });
 
 test('ignores React default-transition-indicator fake navigations', async ({
@@ -302,20 +164,16 @@ test('ignores React default-transition-indicator fake navigations', async ({
   // same-URL navigation tagged info: 'react-transition' for every transition
   // and intercepts it to drive the browser's native spinner. The router skips
   // those (see the info guard in client.tsx) so an unrelated useTransition
-  // can't turn into a route refetch. Our own navigations are unaffected: they
-  // pass info as { scroll } or undefined, never this string.
+  // can't turn into a route refetch. <Link> navigations are unaffected: a real
+  // link click carries no such info.
   //
-  // Land on /slow so the { href: '/slow' } consumer (status-href) is mounted
-  // and dark. If the router mistook a fake navigation for a real one it would
-  // refetch /slow and light status-href up for the duration of that slow load.
+  // On /slow the "Slow" <Link>'s consumer (pending) is mounted and dark. A
+  // mishandled fake navigation would refetch /slow and light it for the
+  // duration of that slow load.
   await page.goto('/slow');
   await waitForHydration(page);
-  await expect(page.getByTestId('status-href')).toHaveCount(0);
+  await expect(page.getByTestId('pending')).toHaveCount(0);
 
-  // Reproduce what React DOM's default transition indicator does in >=19.2: a
-  // fake same-URL navigation tagged info: 'react-transition', intercepted to
-  // keep the browser's native spinner alive. The absorb listener stands in for
-  // React's own interceptor so the fake nav never falls through to a reload.
   await page.evaluate(() => {
     const absorb = (e: NavigateEvent) => {
       if (e.canIntercept && e.info === 'react-transition') {
@@ -329,11 +187,9 @@ test('ignores React default-transition-indicator fake navigations', async ({
     });
   });
 
-  // status-href must stay dark throughout the window in which a spurious /slow
-  // refetch would have lit it. Poll so a transient light-up can't slip past a
-  // single retried assertion.
+  // Poll so a transient light-up can't slip past a single retried assertion.
   for (let i = 0; i < 16; i++) {
-    expect(await page.getByTestId('status-href').count()).toBe(0);
+    expect(await page.getByTestId('pending').count()).toBe(0);
     await page.waitForTimeout(50);
   }
   await expect(page).toHaveURL('/slow');
@@ -354,7 +210,6 @@ test('native-spinner demo: a non-navigation transition swaps content without nav
   await page.getByTestId('load-batch').click();
   await expect(page.getByTestId('batch')).toHaveText('batch #1 loaded');
 
-  // The transition never navigated: URL and route stay put.
   await expect(page).toHaveURL('/');
   await expect(page.locator('h1')).toHaveText('Home');
 });

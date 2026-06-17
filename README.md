@@ -4,6 +4,8 @@ A drop-in replacement for `waku/router/client` built on the [Navigation API](htt
 
 The entire public surface of `waku/router/client` — including every `unstable_*` feature — has a path to the same behavior with `waku-navigation`. This README walks through every feature and shows what the migration looks like.
 
+Because the Navigation API intercepts plain `<a>` clicks, **every `<a>` already navigates client-side — no `<Link>` required.** `<Link>` is still here, as an _enhancement_: it adds a type-safe `to`, prefetching, and per-link navigation status. Reach for `<Link>` when you want those; use a plain `<a>` when you don't.
+
 > **Browser support**: the Navigation API ships in Chromium 102+ and Safari 26 / Firefox 145 (behind/with caveats on some older versions). Check [caniuse](https://caniuse.com/mdn-api_navigation) for current coverage.
 
 ## Install
@@ -39,7 +41,7 @@ Pages and `pages/_slices/*` work exactly as in any Waku app — `waku-navigation
 ## Examples
 
 - `examples/01_minimal` — `useRouter`, `<Slice>`, 404, prefetch, scroll option, events, HMR ([StackBlitz](https://stackblitz.com/github/wakujs/waku-navigation/tree/main/examples/01_minimal))
-- `examples/02_pending` — `useNavigationStatus_UNSTABLE` pending indicators on plain `<a>` for slow routes, client-suspense settling, plus a non-navigation transition that leans on the browser's native spinner
+- `examples/02_pending` — `<Link>` with per-link `useNavigationStatus_UNSTABLE` pending indicators, two same-route links staying independent on click, a View Transitions link, and a non-navigation transition that leans on the browser's native spinner
 
 ---
 
@@ -84,57 +86,60 @@ Notes:
 - `scroll: false` is forwarded to the navigate event via the Navigation API's `info` channel, which is not persisted in history. The internal handler then intercepts with `scroll: 'manual'` so the browser skips its default after-transition scroll.
 - `prefetch(to)` calls `unstable_prefetchRsc` and, if the build publishes a `__WAKU_ROUTER_PREFETCH__` helper, preloads the route's JS chunks via `react-dom`'s `preloadModule`.
 
-### `useNavigationStatus_UNSTABLE({ href?, dataNavKey? })`
+### `<Link>`
 
-There is no `<Link>` — plain `<a>` navigates (the Navigation API intercepts same-origin clicks; see [`<Link>` → plain `<a>`](#link--plain-a)). The one thing a bare `<a>` can't express is per-link _pending_ state, because the indicator needs to bind a DOM anchor to React state. This hook supplies that binding, two ways:
+A plain `<a>` already navigates client-side, so `<Link>` is an _enhancement_, not a requirement. It adds the three things a bare `<a>` can't express:
+
+- a **type-safe `to`** — checked against your generated routes, like `waku/router`'s `<Link>`;
+- **prefetching** — `unstable_prefetchOnEnter` / `unstable_prefetchOnView`;
+- **navigation status** — readable by any descendant via `useNavigationStatus_UNSTABLE()`.
+
+```tsx
+import { Link } from 'waku-navigation';
+
+<Link to="/slow">
+  Slow <NavSpinner />
+</Link>;
+```
+
+```ts
+export type LinkProps = {
+  to: InferredPaths; // type-safe, from your generated routes
+  scroll?: boolean; // false keeps scroll position; otherwise browser default
+  unstable_prefetchOnEnter?: boolean; // prefetch on pointer enter
+  unstable_prefetchOnView?: boolean; // prefetch when scrolled into view
+  unstable_startTransition?: (fn: TransitionFunction) => void; // e.g. View Transitions
+  ref?: Ref<HTMLAnchorElement>;
+} & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'>;
+```
+
+`<Link>` does not intercept the click itself — the browser fires the navigate event and the router correlates it back to this instance. So modifier-clicks, `target`, `download`, and cross-origin `to` all keep their native behavior (use a plain `<a>` for those anyway). The props mirror `waku/router`'s `<Link>`, so migrating across is an import swap.
+
+`unstable_startTransition` overrides how the route-commit transition is started — for example, to integrate the browser View Transitions API. When provided, the per-link pending state is bypassed (it stays `{}`), matching `waku/router`.
+
+### `useNavigationStatus_UNSTABLE()`
+
+Returns the navigation status of the enclosing `<Link>`, like React's `useFormStatus`. No arguments — it reads the `<Link>` by context.
 
 ```tsx
 'use client';
 import { useNavigationStatus_UNSTABLE } from 'waku-navigation';
 
-// (a) by destination href — nothing extra on the <a>:
-function NavSpinner({ href }: { href: string }) {
-  const { pending } = useNavigationStatus_UNSTABLE({ href });
-  return pending ? <span>…</span> : null;
-}
-
-// (b) by data-nav-key — distinguishes two same-href anchors:
-function IdSpinner({ dataNavKey }: { dataNavKey: string }) {
-  const { pending } = useNavigationStatus_UNSTABLE({ dataNavKey });
+function NavSpinner() {
+  const { pending } = useNavigationStatus_UNSTABLE();
   return pending ? <span>…</span> : null;
 }
 ```
 
 ```tsx
-<a href="/slow">Slow <NavSpinner href="/slow" /></a>
-
-<a href="/slow" data-nav-key="slow">Slow <IdSpinner dataNavKey="slow" /></a>
+<Link to="/slow">
+  Slow <NavSpinner />
+</Link>
 ```
 
-`pending` is `true` while a matching navigation is in flight and clears in the same commit that reveals the new route — after the destination's client-side `<Suspense>` boundaries settle, and also on abort or error.
+`pending` is `true` while the link's navigation is in flight and clears in the same commit that reveals the new route — after the destination's client-side `<Suspense>` boundaries settle, and also on abort or error. Two `<Link>`s to the same route stay **independent on click** (the router correlates the clicked one by its own element); programmatic and back/forward navigations have no source element, so every `<Link>` to the destination lights up together. Outside a `<Link>`, the hook returns `{}`.
 
-The two match modes:
-
-- **`{ href }`** matches any navigation whose destination is that href — the consumer just names the destination, and the `<a>` needs no attribute. Matching is same-origin and compares path **and query** (not bare pathname), so `{ href: '/search?q=a' }` does not light for `/search?q=b`. The fragment is ignored: `{ href: '/slow#x' }` is treated the same as `{ href: '/slow' }` (hash-only navigations never set `pending`). The trade-off: it keys off the destination, so every anchor to the same path+query shares it (no per-anchor independence). Think `<label htmlFor>` pointing at a route rather than an element.
-- **`{ dataNavKey }`** matches the navigation from the `<a data-nav-key="…">` with that id. This is what keeps two same-href anchors independent — give them different ids. For repeated or list-rendered links, generate the id with `useId()` in the client component that renders the `<a>` and pass it to both sides:
-
-  ```tsx
-  'use client';
-  function SlowLink() {
-    const dataNavKey = useId();
-    return (
-      <a href="/slow" data-nav-key={dataNavKey}>
-        Slow <IdSpinner dataNavKey={dataNavKey} />
-      </a>
-    );
-  }
-  ```
-
-Pass both (`{ href, dataNavKey }`) to match either. The consumer can live anywhere — inside the `<a>`, beside it, or in a distant component (e.g. a global loading bar) — since the match is by value, not DOM position. A match that nothing satisfies simply never goes `pending` (the empty-state equivalent of calling upstream's hook outside a `<Link>`).
-
-The counterpart of `waku/router/client`'s `useNavigationStatus_UNSTABLE`. A click matches the clicked anchor (its `data-nav-key` and/or the destination href); programmatic and back-forward navigations (no `sourceElement`) match by destination href, and resolve a `data-nav-key` from the first matching anchor in the DOM. Hash-only navigations complete instantly and never set `pending`.
-
-Internally the hook holds a `useOptimistic` state that the router flips inside the navigation transition; React reverts it automatically when the transition settles, so there's no subscription or cleanup to manage.
+Internally each `<Link>` holds a `useOptimistic` state that the router flips inside the navigation transition; React reverts it automatically when the transition settles, so there's no subscription or cleanup to manage.
 
 > **You often don't need a custom spinner at all.** React already drives the browser's native spinner for transitions — during a navigation the Navigation API holds the request pending until the new route commits, and for non-navigation transitions React (≥19.2) fires a fake navigation via `onDefaultTransitionIndicator` to spin that same native indicator. Reach for `useNavigationStatus_UNSTABLE` when you want an _in-page_, per-link indicator on top of the browser-level one. `examples/02_pending` includes a transition (the home page's "Load batch" button) that relies on the native spinner alone.
 
@@ -162,70 +167,40 @@ import { Slice } from 'waku-navigation';
 
 `<Router>` takes no props in `waku-navigation` — there is no `initialRoute`, `unstable_fetchRscStore`, or `unstable_routeInterceptor`. The initial route comes from `window.navigation`. If you used `unstable_routeInterceptor` to rewrite a path before refetch, do it in your `useRouter().push` call site instead.
 
-### `<Link>` → plain `<a>`
+### `<Link>` (drop-in) or plain `<a>`
 
-There is no `<Link>` — drop it and use a plain `<a>`. The Navigation API intercepts same-origin `<a>` clicks for you, and cross-origin links, hash-only links, download links, and modifier-keyed clicks all behave correctly:
+`<Link>` is a drop-in — same import path swap, same props (`to`, `scroll`, `unstable_prefetchOnEnter`, `unstable_prefetchOnView`, `unstable_startTransition`, `ref`, and any `<a>` attributes):
 
 ```diff
 - import { Link } from 'waku/router/client';
++ import { Link } from 'waku-navigation';
+  <Link to="/about">About</Link>
+```
+
+Or drop `<Link>` entirely where you don't need type-safety, prefetching, or status — a plain `<a>` navigates client-side on its own:
+
+```diff
 - <Link to="/about">About</Link>
 + <a href="/about">About</a>
 ```
 
-Specific `<Link>` props translate as follows:
-
-| `<Link>` prop                | `waku-navigation` equivalent                                                                                  |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `to="/x"`                    | `<a href="/x">`                                                                                               |
-| `scroll={false}`             | Click handler that calls `useRouter().push(href, { scroll: false })`                                          |
-| `unstable_pending={node}`    | A consumer using `useNavigationStatus_UNSTABLE({ href })` (or `{ dataNavKey }`) to render `node` when pending |
-| `unstable_notPending={node}` | Same, rendering `node` when `!pending`                                                                        |
-| `unstable_prefetchOnEnter`   | `onMouseEnter={() => useRouter().prefetch(href)}` in a client component                                       |
-| `unstable_prefetchOnView`    | `IntersectionObserver` + `useRouter().prefetch(href)`                                                         |
-| `unstable_startTransition`   | Not needed — the router runs every navigation in a transition internally                                      |
-
-Example for prefetch-on-hover:
-
-```tsx
-'use client';
-import { useRouter } from 'waku-navigation';
-
-export function PrefetchLink({
-  to,
-  children,
-}: {
-  to: string;
-  children: ReactNode;
-}) {
-  const { prefetch } = useRouter();
-  return (
-    <a href={to} onMouseEnter={() => prefetch(to)}>
-      {children}
-    </a>
-  );
-}
-```
+Cross-origin links, hash-only links, download links, and modifier-keyed clicks all behave correctly with a plain `<a>` — the Navigation API passes them through.
 
 ### `<Link>…<Consumer/></Link>` (navigation status)
 
-`waku/router` lets any descendant of a `<Link>` read its navigation status via `useNavigationStatus_UNSTABLE`, relying on the `<Link>` for context. With a plain `<a>` there's no context, so the consumer names what it watches — the destination `href` is the simplest, and needs nothing on the `<a>`:
+Unchanged — a descendant reads the enclosing `<Link>`'s status via the no-arg hook, exactly as in `waku/router`:
 
 ```diff
 - import { Link, useNavigationStatus_UNSTABLE } from 'waku/router/client';
-+ import { useNavigationStatus_UNSTABLE } from 'waku-navigation';
++ import { Link, useNavigationStatus_UNSTABLE } from 'waku-navigation';
 
-- function NavSpinner() {
--   const { pending } = useNavigationStatus_UNSTABLE();
-+ function NavSpinner({ href }: { href: string }) {
-+   const { pending } = useNavigationStatus_UNSTABLE({ href });
+  function NavSpinner() {
+    const { pending } = useNavigationStatus_UNSTABLE();
     return pending ? <span>…</span> : null;
   }
 
-- <Link to="/slow">Slow <NavSpinner /></Link>
-+ <a href="/slow">Slow <NavSpinner href="/slow" /></a>
+  <Link to="/slow">Slow <NavSpinner /></Link>
 ```
-
-Reach for `{ dataNavKey }` + `data-nav-key` on the `<a>` only when you need two same-href anchors to light up independently.
 
 ### `<Slice>`
 
@@ -309,7 +284,7 @@ These are all handled inside the navigate-event listener so apps usually don't n
 
 ## Caveats / not yet implemented
 
-- No `<Link>` component — navigation is just plain `<a>`. Pending status is opt-in via `useNavigationStatus_UNSTABLE({ href })` (by destination) or `{ dataNavKey }` (by `data-nav-key`, for same-href independence). The `<Link>` niceties (`scroll`, `unstable_prefetchOnEnter`/`OnView`) compose from `useRouter().push(href, { scroll })` / `useRouter().prefetch(href)`.
+- `<Link>` is an enhancement over plain `<a>`, not a requirement: a plain `<a>` navigates client-side on its own; `<Link>` adds a type-safe `to`, prefetching, and per-link navigation status via `useNavigationStatus_UNSTABLE()`.
 - `unstable_routeInterceptor` (server-side route rewrite hook) is not supported.
 - `unstable_fetchRscStore` (custom RSC store) is not exposed on `<Router>`.
 - Requires a browser with the Navigation API. There is currently no fallback for older browsers.
