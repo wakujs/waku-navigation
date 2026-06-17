@@ -364,6 +364,8 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     const callback = (event: NavigateEvent) => {
       if (!event.canIntercept) return;
       if (event.downloadRequest !== null || event.formData) return;
+      // React >=19.2's default transition indicator fires fake navigations.
+      if (event.info === 'react-transition') return;
       const nextRoute = parseRoute(new URL(event.destination.url));
       // useRouter().push/replace forward { scroll } via `info`. The Navigation
       // API itself doesn't persist `info` in history, so it only applies to

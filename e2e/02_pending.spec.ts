@@ -294,3 +294,67 @@ test('pending stays true through nested client-side Suspense, not just the serve
   await expect(page.locator('h1')).toHaveText('Slow Page');
   await expect(page.getByTestId('pending')).toHaveCount(0);
 });
+
+test('ignores React default-transition-indicator fake navigations', async ({
+  page,
+}) => {
+  // React >=19.2's onDefaultTransitionIndicator, on by default, fires a fake
+  // same-URL navigation tagged info: 'react-transition' for every transition
+  // and intercepts it to drive the browser's native spinner. The router skips
+  // those (see the info guard in client.tsx) so an unrelated useTransition
+  // can't turn into a route refetch. Our own navigations are unaffected: they
+  // pass info as { scroll } or undefined, never this string.
+  //
+  // Land on /slow so the { href: '/slow' } consumer (status-href) is mounted
+  // and dark. If the router mistook a fake navigation for a real one it would
+  // refetch /slow and light status-href up for the duration of that slow load.
+  await page.goto('/slow');
+  await waitForHydration(page);
+  await expect(page.getByTestId('status-href')).toHaveCount(0);
+
+  // Reproduce what React DOM's default transition indicator does in >=19.2: a
+  // fake same-URL navigation tagged info: 'react-transition', intercepted to
+  // keep the browser's native spinner alive. The absorb listener stands in for
+  // React's own interceptor so the fake nav never falls through to a reload.
+  await page.evaluate(() => {
+    const absorb = (e: NavigateEvent) => {
+      if (e.canIntercept && e.info === 'react-transition') {
+        e.intercept({ handler: () => new Promise((r) => setTimeout(r, 600)) });
+      }
+    };
+    window.navigation.addEventListener('navigate', absorb);
+    window.navigation.navigate(window.location.href, {
+      history: 'replace',
+      info: 'react-transition',
+    });
+  });
+
+  // status-href must stay dark throughout the window in which a spurious /slow
+  // refetch would have lit it. Poll so a transient light-up can't slip past a
+  // single retried assertion.
+  for (let i = 0; i < 16; i++) {
+    expect(await page.getByTestId('status-href').count()).toBe(0);
+    await page.waitForTimeout(50);
+  }
+  await expect(page).toHaveURL('/slow');
+  await expect(page.locator('h1')).toHaveText('Slow Page');
+});
+
+test('native-spinner demo: a non-navigation transition swaps content without navigating', async ({
+  page,
+}) => {
+  // The home page's NativeSpinnerDemo runs a startTransition that suspends ~1s.
+  // React drives the browser's native spinner during it (the demo renders no
+  // custom indicator). The router must not mistake React's fake
+  // 'react-transition' navigation for a route change.
+  await page.goto('/');
+  await waitForHydration(page);
+  await expect(page.getByTestId('batch')).toHaveText('no batch yet');
+
+  await page.getByTestId('load-batch').click();
+  await expect(page.getByTestId('batch')).toHaveText('batch #1 loaded');
+
+  // The transition never navigated: URL and route stay put.
+  await expect(page).toHaveURL('/');
+  await expect(page.locator('h1')).toHaveText('Home');
+});

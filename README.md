@@ -39,7 +39,7 @@ Pages and `pages/_slices/*` work exactly as in any Waku app — `waku-navigation
 ## Examples
 
 - `examples/01_minimal` — `useRouter`, `<Slice>`, 404, prefetch, scroll option, events, HMR ([StackBlitz](https://stackblitz.com/github/wakujs/waku-navigation/tree/main/examples/01_minimal))
-- `examples/02_pending` — `useNavigationStatus_UNSTABLE` pending indicators on plain `<a>` for slow routes, client-suspense settling
+- `examples/02_pending` — `useNavigationStatus_UNSTABLE` pending indicators on plain `<a>` for slow routes, client-suspense settling, plus a non-navigation transition that leans on the browser's native spinner
 
 ---
 
@@ -135,6 +135,8 @@ Pass both (`{ href, dataNavKey }`) to match either. The consumer can live anywhe
 The counterpart of `waku/router/client`'s `useNavigationStatus_UNSTABLE`. A click matches the clicked anchor (its `data-nav-key` and/or the destination href); programmatic and back-forward navigations (no `sourceElement`) match by destination href, and resolve a `data-nav-key` from the first matching anchor in the DOM. Hash-only navigations complete instantly and never set `pending`.
 
 Internally the hook holds a `useOptimistic` state that the router flips inside the navigation transition; React reverts it automatically when the transition settles, so there's no subscription or cleanup to manage.
+
+> **You often don't need a custom spinner at all.** React already drives the browser's native spinner for transitions — during a navigation the Navigation API holds the request pending until the new route commits, and for non-navigation transitions React (≥19.2) fires a fake navigation via `onDefaultTransitionIndicator` to spin that same native indicator. Reach for `useNavigationStatus_UNSTABLE` when you want an _in-page_, per-link indicator on top of the browser-level one. `examples/02_pending` includes a transition (the home page's "Load batch" button) that relies on the native spinner alone.
 
 ### `<Slice>`
 
@@ -297,6 +299,7 @@ These are all handled inside the navigate-event listener so apps usually don't n
 - **Form submission guard** — `<form method="POST">` submissions (`event.formData != null`) are passed through to the server.
 - **Hash-only navigations** — not intercepted by default (the browser scrolls to the anchor natively), but state is synced so `useRouter().hash` reflects the new fragment. If `useRouter().push('#x', { scroll: false })` is used, the handler intercepts with `scroll: 'manual'` to honor that.
 - **Abort during transition** — `event.signal` is checked between async steps so a fast-clicked second navigation cleanly cancels the first without committing stale state.
+- **React's default transition indicator** — React (≥19.2) fires a fake same-URL navigation tagged `info: 'react-transition'` for every transition, intercepting it to show the browser's native spinner. The router skips these (they aren't route changes), so an unrelated `useTransition` anywhere in your app never triggers a refetch.
 - **404 on the client** — a refetch that throws with `getErrorInfo(err)?.status === 404` is handled by refetching `/404` and pointing the slot there, mirroring Waku's behavior. The URL still reflects the user's request.
 - **Static route cache** — routes with `getConfig({ render: 'static' })` are added to a `staticPathSet` after their first fetch; revisits skip the refetch entirely (the RSC payload is already in Waku's store).
 - **`X-Waku-Router-Skip` header** — every refetch sends the etags of elements we already have (harvested from the RSC payload's `ETAG:`-prefixed entries) so the server can skip re-rendering shared layouts/slices whose etag still matches.
