@@ -104,7 +104,7 @@ import { Link } from 'waku-navigation';
 
 ```ts
 export type LinkProps = {
-  to: InferredPaths; // type-safe, from your generated routes
+  to: RouteHref; // type-safe, from your generated routes
   scroll?: boolean; // false keeps scroll position; otherwise browser default
   unstable_prefetchOnEnter?: boolean; // prefetch on pointer enter
   unstable_prefetchOnView?: boolean; // prefetch when scrolled into view

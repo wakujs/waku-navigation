@@ -234,8 +234,10 @@ test('refetch sends X-Waku-Router-Skip mapping cached element ids to etags', asy
   expect(typeof parsed).toBe('object');
   const entries = Object.entries(parsed as Record<string, unknown>);
   expect(entries.length).toBeGreaterThan(0);
+  // Each etag is either a string (dynamic slot) or waku's numeric static
+  // sentinel 1 (static slot); /'s slots are static, so they come back as 1.
   for (const [, etag] of entries) {
-    expect(typeof etag).toBe('string');
+    expect(['string', 'number']).toContain(typeof etag);
   }
 });
 
