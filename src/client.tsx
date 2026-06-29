@@ -24,7 +24,7 @@ import {
   Root,
   Slot,
   unstable_prefetchRsc as prefetchRsc,
-  unstable_withEnhanceFetchFn as withEnhanceFetchFn,
+  unstable_registerFetchEnhancer as registerFetchEnhancer,
   useElementsPromise_UNSTABLE as useElementsPromise,
   useRefetch,
 } from 'waku/minimal/client';
@@ -39,7 +39,7 @@ import {
   unstable_ROUTE_ID as ROUTE_ID,
   unstable_RouterContext as RouterContext,
   unstable_SKIP_HEADER as SKIP_HEADER,
-  type Unstable_InferredPaths as InferredPaths,
+  type Unstable_RouteHref as RouteHref,
 } from 'waku/router/client';
 
 export { Slice };
@@ -48,8 +48,10 @@ type Elements = Record<string, unknown>;
 type Route = { path: string; query: string; hash: string };
 
 const NOT_FOUND_PATH = '/404';
-// Mirrors waku's unexported ETAG_ID_PREFIX (router/common.js).
+// Mirror waku's unexported etag constants (router/isomorphic-utils/route-path).
+// STATIC_ETAG is a numeric sentinel a static slot carries instead of a string.
 const ETAG_ID_PREFIX = 'ETAG:';
+const STATIC_ETAG = 1;
 
 type NavigationStatus = { pending?: boolean };
 type TransitionFunction = () => void | Promise<void>;
@@ -82,7 +84,7 @@ export const useNavigationStatus_UNSTABLE = (): NavigationStatus =>
 /** Props for {@link Link}. Mirrors `waku/router`'s `<Link>`. */
 export type LinkProps = {
   /** Destination, type-checked against your app's generated routes. */
-  to: InferredPaths;
+  to: RouteHref;
   children: ReactNode;
   /**
    * Whether to scroll on navigation. `false` keeps the current scroll
@@ -282,7 +284,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   }, []);
   const registryRef = useRef(new Map<string, NavStatusEntry>());
   const staticPathSetRef = useRef(new Set<string>());
-  const cachedEtagsRef = useRef<Record<string, string>>({});
+  const cachedEtagsRef = useRef<Record<string, string | number>>({});
   // Stable instance: <Slice> mutates this Set across renders.
   const fetchingSlices = useMemo(() => new Set<string>(), []);
   useEffect(() => {
@@ -294,13 +296,14 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
         if (routeData && elements[IS_STATIC_ID]) {
           staticPathSetRef.current.add(routeData[0]);
         }
-        const etags: Record<string, string> = {};
+        const etags: Record<string, string | number> = {};
         for (const [key, value] of Object.entries(elements)) {
-          // Skip empty (clear signal) and non-Latin1 (breaks the fetch header).
+          // Keep the static sentinel; for string tags drop empty (clear signal)
+          // and non-Latin1 (breaks the fetch header).
           if (
             key.startsWith(ETAG_ID_PREFIX) &&
-            typeof value === 'string' &&
-            /^[ -ÿ]+$/.test(value)
+            (value === STATIC_ETAG ||
+              (typeof value === 'string' && /^[ -ÿ]+$/.test(value)))
           ) {
             etags[key.slice(ETAG_ID_PREFIX.length)] = value;
           }
@@ -318,9 +321,9 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   }, []);
   // Send our cached etags via X-Waku-Router-Skip so the server can skip
   // re-rendering slots whose etag still matches.
-  const enhanceFetchWithSkip = useMemo(
+  useEffect(
     () =>
-      withEnhanceFetchFn((fetchFn) => (input, init) => {
+      registerFetchEnhancer((fetchFn) => (input, init) => {
         const headers = new Headers(init?.headers);
         headers.set(SKIP_HEADER, JSON.stringify(cachedEtagsRef.current));
         return fetchFn(input, { ...init, headers });
@@ -367,11 +370,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   const prefetchRoute = useCallback(
     (next: Route) => {
       if (staticPathSetRef.current.has(next.path)) return;
-      prefetchRsc(
-        encodeRoutePath(next.path),
-        getRscParams(next.query),
-        enhanceFetchWithSkip,
-      );
+      prefetchRsc(encodeRoutePath(next.path), getRscParams(next.query));
       // When the build publishes it, __WAKU_ROUTER_PREFETCH__ yields the
       // route's JS chunk ids to preload.
       (
@@ -385,7 +384,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
         preloadModule(id, { as: 'script' }),
       );
     },
-    [enhanceFetchWithSkip, getRscParams],
+    [getRscParams],
   );
   // Vite HMR (dev only): clear caches and refetch the current route when Waku's
   // runtime fires __WAKU_RSC_RELOAD_LISTENERS__.
@@ -473,7 +472,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                     await refetch(
                       encodeRoutePath(nextRoute.path),
                       getRscParams(nextRoute.query),
-                      enhanceFetchWithSkip,
                     );
                   }
                   if (signal.aborted) return resolve();
@@ -484,7 +482,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                       await refetch(
                         encodeRoutePath(NOT_FOUND_PATH),
                         getRscParams(''),
-                        enhanceFetchWithSkip,
                       );
                     }
                     if (signal.aborted) return resolve();
@@ -517,7 +514,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     return () => {
       window.navigation.removeEventListener('navigate', callback);
     };
-  }, [refetch, enhanceFetchWithSkip, getRscParams, emitRouteEvent]);
+  }, [refetch, getRscParams, emitRouteEvent]);
   // Mirror waku's INTERNAL_ServerRouter context shape; only route and
   // prefetchRoute are used.
   const notAvailable = (name: string) => () => {
