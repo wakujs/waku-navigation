@@ -30,19 +30,27 @@ import {
 } from 'waku/minimal/client';
 import {
   Slice,
+  Unstable_SearchCodecsProvider,
   unstable_addBase as addBase,
+  unstable_buildRouteHref as buildRouteHref,
   unstable_encodeRoutePath as encodeRoutePath,
   unstable_getErrorInfo as getErrorInfo,
+  unstable_matchRouteParams as matchRouteParams,
   unstable_parseRoute as parseRoute,
   unstable_getRouteSlotId as getRouteSlotId,
   unstable_IS_STATIC_ID as IS_STATIC_ID,
   unstable_ROUTE_ID as ROUTE_ID,
   unstable_RouterContext as RouterContext,
   unstable_SKIP_HEADER as SKIP_HEADER,
+  unstable_useResolveSearchCodec as useResolveSearchCodec,
+  type Unstable_BuildRouteHrefTarget as BuildRouteHrefTarget,
   type Unstable_RouteHref as RouteHref,
+  type Unstable_RouteParams as RouteParams,
+  type Unstable_RoutePath as RoutePath,
+  type Unstable_RouteSearch as RouteSearch,
 } from 'waku/router/client';
 
-export { Slice };
+export { Slice, Unstable_SearchCodecsProvider };
 
 type Elements = Record<string, unknown>;
 type Route = { path: string; query: string; hash: string };
@@ -82,9 +90,12 @@ export const useNavigationStatus_UNSTABLE = (): NavigationStatus =>
   useContext(NavigationStatusContext);
 
 /** Props for {@link Link}. Mirrors `waku/router`'s `<Link>`. */
-export type LinkProps = {
-  /** Destination, type-checked against your app's generated routes. */
-  to: RouteHref;
+export type LinkProps<Path extends RoutePath> = {
+  /**
+   * Destination, type-checked against your app's generated routes. Either an
+   * href string or, for a parameterized route, `{ to, params, hash }`.
+   */
+  to: RouteHref | BuildRouteHrefTarget<Path>;
   children: ReactNode;
   /**
    * Whether to scroll on navigation. `false` keeps the current scroll
@@ -110,7 +121,7 @@ export type LinkProps = {
  * prefetching, and per-link navigation status (read by descendants via
  * {@link useNavigationStatus_UNSTABLE}). Mirrors `waku/router`'s `<Link>`.
  */
-export function Link({
+export function Link<Path extends RoutePath>({
   to,
   children,
   scroll,
@@ -119,10 +130,11 @@ export function Link({
   unstable_startTransition,
   ref: refProp,
   ...props
-}: LinkProps) {
+}: LinkProps<Path>) {
   const base = (import.meta as { env?: { WAKU_CONFIG_BASE_PATH?: string } }).env
     ?.WAKU_CONFIG_BASE_PATH;
-  const resolvedTo = base ? addBase(to, base) : to;
+  const href = typeof to === 'string' ? to : buildRouteHref(to);
+  const resolvedTo = base ? addBase(href, base) : href;
   const ctx = useContext(RouterContext);
   const { register } = useContext(NavStatusRegistryContext);
   const [status, setOptimisticStatus] = useOptimistic<NavigationStatus>({});
@@ -193,7 +205,18 @@ export function Link({
   );
 }
 
-type PushReplaceOptions = { scroll?: boolean };
+type NavigateOptions = { scroll?: boolean };
+type Navigate = {
+  (to: RouteHref, options?: NavigateOptions): Promise<void>;
+  <Path extends RoutePath>(
+    target: BuildRouteHrefTarget<Path>,
+    options?: NavigateOptions,
+  ): Promise<void>;
+};
+type Prefetch = {
+  (to: RouteHref): void;
+  <Path extends RoutePath>(target: BuildRouteHrefTarget<Path>): void;
+};
 type RouteChangeEvents = {
   on: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
   off: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
@@ -211,16 +234,26 @@ export function useRouter() {
     path: route.path,
     query: route.query,
     hash: route.hash,
-    push: (to: string, options?: PushReplaceOptions) =>
-      window.navigation.navigate(to, {
+    push: (async (
+      to: RouteHref | BuildRouteHrefTarget<RoutePath>,
+      options?: NavigateOptions,
+    ) => {
+      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      await window.navigation.navigate(href, {
         history: 'push',
         info: { scroll: options?.scroll },
-      }).finished,
-    replace: (to: string, options?: PushReplaceOptions) =>
-      window.navigation.navigate(to, {
+      }).finished;
+    }) as Navigate,
+    replace: (async (
+      to: RouteHref | BuildRouteHrefTarget<RoutePath>,
+      options?: NavigateOptions,
+    ) => {
+      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      await window.navigation.navigate(href, {
         history: 'replace',
         info: { scroll: options?.scroll },
-      }).finished,
+      }).finished;
+    }) as Navigate,
     reload: () => window.navigation.reload().finished,
     back: () => {
       window.navigation.back();
@@ -228,12 +261,86 @@ export function useRouter() {
     forward: () => {
       window.navigation.forward();
     },
-    prefetch: (to: string) => {
-      ctx?.prefetchRoute(parseRoute(new URL(to, window.location.href)));
-    },
+    prefetch: ((to: RouteHref | BuildRouteHrefTarget<RoutePath>) => {
+      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      ctx?.prefetchRoute(parseRoute(new URL(href, window.location.href)));
+    }) as Prefetch,
     unstable_events: (ctx?.routeChangeEvents ??
       noopEvents) as RouteChangeEvents,
   };
+}
+
+/**
+ * Read the current route's params, typed from the `from` path, or `null` when
+ * the current path does not match it. Mirrors `waku/router`'s
+ * `useParams_UNSTABLE`.
+ */
+export function useParams_UNSTABLE<Path extends RoutePath>({
+  from,
+}: {
+  from: Path;
+}): RouteParams<Path> | null {
+  const { path } = useRouter();
+  return useMemo(() => matchRouteParams(from, path), [from, path]);
+}
+
+/**
+ * Read the current route's typed `search`, parsed with the route's codec
+ * (provided via {@link Unstable_SearchCodecsProvider}), or `null` when the
+ * current path does not match `from` or the route has no codec. Mirrors
+ * `waku/router`'s `useSearch_UNSTABLE`.
+ */
+export function useSearch_UNSTABLE<Path extends RoutePath>({
+  from,
+}: {
+  from: Path;
+}): RouteSearch<Path> | null {
+  const { path, query } = useRouter();
+  const resolveCodec = useResolveSearchCodec();
+  return useMemo(() => {
+    if (matchRouteParams(from, path) === null) return null;
+    const codec = resolveCodec(from);
+    return codec ? (codec.parse(query) as RouteSearch<Path>) : null;
+  }, [from, path, query, resolveCodec]);
+}
+
+type SetSearch<Path extends RoutePath> = (
+  update:
+    | Partial<RouteSearch<Path>>
+    | ((prev: RouteSearch<Path>) => Partial<RouteSearch<Path>>),
+  options?: { history?: 'push' | 'replace'; scroll?: boolean },
+) => Promise<void>;
+
+/**
+ * Returns a setter for the current route's typed `search`, serialized with the
+ * route's codec (provided via {@link Unstable_SearchCodecsProvider}). It
+ * navigates to the same path with the new query (push by default). A no-op when
+ * the current path does not match `from` or has no codec. Mirrors `waku/router`'s
+ * `useSetSearch_UNSTABLE`.
+ */
+export function useSetSearch_UNSTABLE<Path extends RoutePath>({
+  from,
+}: {
+  from: Path;
+}): SetSearch<Path> {
+  const { path, query } = useRouter();
+  const resolveCodec = useResolveSearchCodec();
+  return useCallback<SetSearch<Path>>(
+    async (update, options) => {
+      if (matchRouteParams(from, path) === null) return;
+      const codec = resolveCodec(from);
+      if (!codec) return;
+      const prev = codec.parse(query) as RouteSearch<Path>;
+      const partial = typeof update === 'function' ? update(prev) : update;
+      const url = new URL(window.location.href);
+      url.search = codec.serialize({ ...prev, ...partial });
+      await window.navigation.navigate(url.href, {
+        history: options?.history ?? 'push',
+        info: { scroll: options?.scroll },
+      }).finished;
+    },
+    [from, path, query, resolveCodec],
+  );
 }
 
 // Same origin + path + query (not pathname; fragment ignored). Malformed input

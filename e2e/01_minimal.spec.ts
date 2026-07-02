@@ -495,3 +495,71 @@ test('client-side 404: navigating to an unknown route renders the 404 page', asy
   await expect(page).toHaveURL('/');
   await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
 });
+
+test('<Link> object form navigates to a parameterized route', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+
+  // to={{ to: '/user/[id]', params: { id: 'alice' } }} builds /user/alice.
+  await page.getByTestId('user-link').click();
+  await expect(page).toHaveURL('/user/alice');
+  await expect(page.getByTestId('user-heading')).toHaveText('User: alice');
+});
+
+test('useRouter().push object form navigates to a parameterized route', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await waitForHydration(page);
+
+  await page.getByTestId('user-push').click();
+  await expect(page).toHaveURL('/user/bob');
+  await expect(page.getByTestId('user-heading')).toHaveText('User: bob');
+});
+
+test('object form URL-encodes param values', async ({ page }) => {
+  await page.goto('/');
+  await waitForHydration(page);
+
+  // params: { id: 'a b' } -> buildRouteHref percent-encodes the space into the
+  // URL. (waku passes the raw path segment to the page, so it renders encoded.)
+  await page.getByTestId('user-push-encoded').click();
+  await expect(page).toHaveURL('/user/a%20b');
+  await expect(page.getByTestId('user-heading')).toHaveText('User: a%20b');
+});
+
+test('useParams_UNSTABLE reads the typed, decoded route params', async ({
+  page,
+}) => {
+  await page.goto('/user/alice');
+  await waitForHydration(page);
+  await expect(page.getByTestId('user-params-id')).toHaveText(
+    'params.id: alice',
+  );
+
+  // Unlike the raw page prop, useParams_UNSTABLE decodes the segment: %20 -> ' '.
+  await page.goto('/user/a%20b');
+  await waitForHydration(page);
+  await expect(page.getByTestId('user-params-id')).toHaveText('params.id: a b');
+});
+
+test('useSearch_UNSTABLE / useSetSearch_UNSTABLE read and write typed search', async ({
+  page,
+}) => {
+  await page.goto('/search');
+  await waitForHydration(page);
+  // codec parses an empty query to the default tab.
+  await expect(page.getByTestId('search-tab')).toHaveText('tab: home');
+
+  // setSearch serializes via the codec and navigates to the same path.
+  await page.getByTestId('set-tab-faq').click();
+  await expect(page).toHaveURL('/search?tab=faq');
+  await expect(page.getByTestId('search-tab')).toHaveText('tab: faq');
+
+  // The updater form receives the current parsed search.
+  await page.getByTestId('set-tab-updater').click();
+  await expect(page).toHaveURL('/search?tab=faq-x');
+  await expect(page.getByTestId('search-tab')).toHaveText('tab: faq-x');
+});
