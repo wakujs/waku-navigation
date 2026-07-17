@@ -24,34 +24,49 @@ import {
   Root,
   Slot,
   unstable_prefetchRsc as prefetchRsc,
-  unstable_registerFetchEnhancer as registerFetchEnhancer,
   useElementsPromise_UNSTABLE as useElementsPromise,
   useRefetch,
 } from 'waku/minimal/client';
 import {
   Slice,
+  Unstable_SearchCodecsProvider,
   unstable_addBase as addBase,
+  unstable_buildRouteHref as buildRouteHref,
   unstable_encodeRoutePath as encodeRoutePath,
   unstable_getErrorInfo as getErrorInfo,
+  unstable_matchRouteParams as matchRouteParams,
   unstable_parseRoute as parseRoute,
   unstable_getRouteSlotId as getRouteSlotId,
   unstable_IS_STATIC_ID as IS_STATIC_ID,
   unstable_ROUTE_ID as ROUTE_ID,
   unstable_RouterContext as RouterContext,
-  unstable_SKIP_HEADER as SKIP_HEADER,
+  unstable_useResolveSearchCodec as useResolveSearchCodec,
+  type Unstable_BuildRouteHrefTarget as BuildRouteHrefTarget,
   type Unstable_RouteHref as RouteHref,
+  type Unstable_RouteParams as RouteParams,
+  type Unstable_RoutePath as RoutePath,
+  type Unstable_RouteSearch as RouteSearch,
 } from 'waku/router/client';
 
-export { Slice };
+export { Slice, Unstable_SearchCodecsProvider };
 
 type Elements = Record<string, unknown>;
 type Route = { path: string; query: string; hash: string };
 
 const NOT_FOUND_PATH = '/404';
-// Mirror waku's unexported etag constants (router/isomorphic-utils/route-path).
-// STATIC_ETAG is a numeric sentinel a static slot carries instead of a string.
-const ETAG_ID_PREFIX = 'ETAG:';
-const STATIC_ETAG = 1;
+
+// Router-scoped prefetch cache mirroring waku/router's. A prefetched route tree
+// is held here keyed by (rscPath, query) and threaded back into refetch via
+// `unstable_prefetched`, since waku's `prefetchRsc` now returns the tree for the
+// caller to hold rather than populating a store that refetch reads implicitly.
+type PrefetchEntry = {
+  promise: ReturnType<typeof prefetchRsc>;
+  expireAt: number;
+};
+const PREFETCH_TTL = 60_000;
+const PREFETCH_LIMIT = 100;
+const prefetchCacheKey = (rscPath: string, query: string) =>
+  rscPath + '\0' + query;
 
 type NavigationStatus = { pending?: boolean };
 type TransitionFunction = () => void | Promise<void>;
@@ -82,9 +97,12 @@ export const useNavigationStatus_UNSTABLE = (): NavigationStatus =>
   useContext(NavigationStatusContext);
 
 /** Props for {@link Link}. Mirrors `waku/router`'s `<Link>`. */
-export type LinkProps = {
-  /** Destination, type-checked against your app's generated routes. */
-  to: RouteHref;
+export type LinkProps<Path extends RoutePath> = {
+  /**
+   * Destination, type-checked against your app's generated routes. Either an
+   * href string or, for a parameterized route, `{ to, params, hash }`.
+   */
+  to: RouteHref | BuildRouteHrefTarget<Path>;
   children: ReactNode;
   /**
    * Whether to scroll on navigation. `false` keeps the current scroll
@@ -110,7 +128,7 @@ export type LinkProps = {
  * prefetching, and per-link navigation status (read by descendants via
  * {@link useNavigationStatus_UNSTABLE}). Mirrors `waku/router`'s `<Link>`.
  */
-export function Link({
+export function Link<Path extends RoutePath>({
   to,
   children,
   scroll,
@@ -119,10 +137,11 @@ export function Link({
   unstable_startTransition,
   ref: refProp,
   ...props
-}: LinkProps) {
+}: LinkProps<Path>) {
   const base = (import.meta as { env?: { WAKU_CONFIG_BASE_PATH?: string } }).env
     ?.WAKU_CONFIG_BASE_PATH;
-  const resolvedTo = base ? addBase(to, base) : to;
+  const href = typeof to === 'string' ? to : buildRouteHref(to);
+  const resolvedTo = base ? addBase(href, base) : href;
   const ctx = useContext(RouterContext);
   const { register } = useContext(NavStatusRegistryContext);
   const [status, setOptimisticStatus] = useOptimistic<NavigationStatus>({});
@@ -193,7 +212,18 @@ export function Link({
   );
 }
 
-type PushReplaceOptions = { scroll?: boolean };
+type NavigateOptions = { scroll?: boolean };
+type Navigate = {
+  (to: RouteHref, options?: NavigateOptions): Promise<void>;
+  <Path extends RoutePath>(
+    target: BuildRouteHrefTarget<Path>,
+    options?: NavigateOptions,
+  ): Promise<void>;
+};
+type Prefetch = {
+  (to: RouteHref): void;
+  <Path extends RoutePath>(target: BuildRouteHrefTarget<Path>): void;
+};
 type RouteChangeEvents = {
   on: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
   off: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
@@ -211,16 +241,26 @@ export function useRouter() {
     path: route.path,
     query: route.query,
     hash: route.hash,
-    push: (to: string, options?: PushReplaceOptions) =>
-      window.navigation.navigate(to, {
+    push: (async (
+      to: RouteHref | BuildRouteHrefTarget<RoutePath>,
+      options?: NavigateOptions,
+    ) => {
+      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      await window.navigation.navigate(href, {
         history: 'push',
         info: { scroll: options?.scroll },
-      }).finished,
-    replace: (to: string, options?: PushReplaceOptions) =>
-      window.navigation.navigate(to, {
+      }).finished;
+    }) as Navigate,
+    replace: (async (
+      to: RouteHref | BuildRouteHrefTarget<RoutePath>,
+      options?: NavigateOptions,
+    ) => {
+      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      await window.navigation.navigate(href, {
         history: 'replace',
         info: { scroll: options?.scroll },
-      }).finished,
+      }).finished;
+    }) as Navigate,
     reload: () => window.navigation.reload().finished,
     back: () => {
       window.navigation.back();
@@ -228,12 +268,86 @@ export function useRouter() {
     forward: () => {
       window.navigation.forward();
     },
-    prefetch: (to: string) => {
-      ctx?.prefetchRoute(parseRoute(new URL(to, window.location.href)));
-    },
+    prefetch: ((to: RouteHref | BuildRouteHrefTarget<RoutePath>) => {
+      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      ctx?.prefetchRoute(parseRoute(new URL(href, window.location.href)));
+    }) as Prefetch,
     unstable_events: (ctx?.routeChangeEvents ??
       noopEvents) as RouteChangeEvents,
   };
+}
+
+/**
+ * Read the current route's params, typed from the `from` path, or `null` when
+ * the current path does not match it. Mirrors `waku/router`'s
+ * `useParams_UNSTABLE`.
+ */
+export function useParams_UNSTABLE<Path extends RoutePath>({
+  from,
+}: {
+  from: Path;
+}): RouteParams<Path> | null {
+  const { path } = useRouter();
+  return useMemo(() => matchRouteParams(from, path), [from, path]);
+}
+
+/**
+ * Read the current route's typed `search`, parsed with the route's codec
+ * (provided via {@link Unstable_SearchCodecsProvider}), or `null` when the
+ * current path does not match `from` or the route has no codec. Mirrors
+ * `waku/router`'s `useSearch_UNSTABLE`.
+ */
+export function useSearch_UNSTABLE<Path extends RoutePath>({
+  from,
+}: {
+  from: Path;
+}): RouteSearch<Path> | null {
+  const { path, query } = useRouter();
+  const resolveCodec = useResolveSearchCodec();
+  return useMemo(() => {
+    if (matchRouteParams(from, path) === null) return null;
+    const codec = resolveCodec(from);
+    return codec ? (codec.parse(query) as RouteSearch<Path>) : null;
+  }, [from, path, query, resolveCodec]);
+}
+
+type SetSearch<Path extends RoutePath> = (
+  update:
+    | Partial<RouteSearch<Path>>
+    | ((prev: RouteSearch<Path>) => Partial<RouteSearch<Path>>),
+  options?: { history?: 'push' | 'replace'; scroll?: boolean },
+) => Promise<void>;
+
+/**
+ * Returns a setter for the current route's typed `search`, serialized with the
+ * route's codec (provided via {@link Unstable_SearchCodecsProvider}). It
+ * navigates to the same path with the new query (push by default). A no-op when
+ * the current path does not match `from` or has no codec. Mirrors `waku/router`'s
+ * `useSetSearch_UNSTABLE`.
+ */
+export function useSetSearch_UNSTABLE<Path extends RoutePath>({
+  from,
+}: {
+  from: Path;
+}): SetSearch<Path> {
+  const { path, query } = useRouter();
+  const resolveCodec = useResolveSearchCodec();
+  return useCallback<SetSearch<Path>>(
+    async (update, options) => {
+      if (matchRouteParams(from, path) === null) return;
+      const codec = resolveCodec(from);
+      if (!codec) return;
+      const prev = codec.parse(query) as RouteSearch<Path>;
+      const partial = typeof update === 'function' ? update(prev) : update;
+      const url = new URL(window.location.href);
+      url.search = codec.serialize({ ...prev, ...partial });
+      await window.navigation.navigate(url.href, {
+        history: options?.history ?? 'push',
+        info: { scroll: options?.scroll },
+      }).finished;
+    },
+    [from, path, query, resolveCodec],
+  );
 }
 
 // Same origin + path + query (not pathname; fragment ignored). Malformed input
@@ -284,7 +398,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   }, []);
   const registryRef = useRef(new Map<string, NavStatusEntry>());
   const staticPathSetRef = useRef(new Set<string>());
-  const cachedEtagsRef = useRef<Record<string, string | number>>({});
   // Stable instance: <Slice> mutates this Set across renders.
   const fetchingSlices = useMemo(() => new Set<string>(), []);
   useEffect(() => {
@@ -296,19 +409,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
         if (routeData && elements[IS_STATIC_ID]) {
           staticPathSetRef.current.add(routeData[0]);
         }
-        const etags: Record<string, string | number> = {};
-        for (const [key, value] of Object.entries(elements)) {
-          // Keep the static sentinel; for string tags drop empty (clear signal)
-          // and non-Latin1 (breaks the fetch header).
-          if (
-            key.startsWith(ETAG_ID_PREFIX) &&
-            (value === STATIC_ETAG ||
-              (typeof value === 'string' && /^[ -ÿ]+$/.test(value)))
-          ) {
-            etags[key.slice(ETAG_ID_PREFIX.length)] = value;
-          }
-        }
-        cachedEtagsRef.current = etags;
       },
       () => {},
     );
@@ -319,17 +419,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
       registryRef.current.delete(id);
     };
   }, []);
-  // Send our cached etags via X-Waku-Router-Skip so the server can skip
-  // re-rendering slots whose etag still matches.
-  useEffect(
-    () =>
-      registerFetchEnhancer((fetchFn) => (input, init) => {
-        const headers = new Headers(init?.headers);
-        headers.set(SKIP_HEADER, JSON.stringify(cachedEtagsRef.current));
-        return fetchFn(input, { ...init, headers });
-      }),
-    [],
-  );
   // Waku's prefetch cache keys params by identity, so reuse one object per
   // query string or prefetch entries get invalidated.
   const rscParamsByQueryRef = useRef(new Map<string, URLSearchParams>());
@@ -367,10 +456,25 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     }),
     [routeChangeListeners],
   );
+  const prefetchCacheRef = useRef(new Map<string, PrefetchEntry>());
   const prefetchRoute = useCallback(
     (next: Route) => {
       if (staticPathSetRef.current.has(next.path)) return;
-      prefetchRsc(encodeRoutePath(next.path), getRscParams(next.query));
+      const rscPath = encodeRoutePath(next.path);
+      const key = prefetchCacheKey(rscPath, next.query);
+      const cache = prefetchCacheRef.current;
+      const now = Date.now();
+      const existing = cache.get(key);
+      if (!existing || existing.expireAt <= now) {
+        if (cache.size >= PREFETCH_LIMIT) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+        }
+        cache.set(key, {
+          promise: prefetchRsc(rscPath, getRscParams(next.query)),
+          expireAt: now + PREFETCH_TTL,
+        });
+      }
       // When the build publishes it, __WAKU_ROUTER_PREFETCH__ yields the
       // route's JS chunk ids to preload.
       (
@@ -392,7 +496,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     if (!(import.meta as { hot?: unknown }).hot) return;
     const refetchRoute = () => {
       staticPathSetRef.current.clear();
-      cachedEtagsRef.current = {};
+      prefetchCacheRef.current.clear();
       refetch(encodeRoutePath(route.path), getRscParams(route.query));
     };
     const listeners = ((
@@ -469,9 +573,20 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                 let targetRoute = nextRoute;
                 try {
                   if (!staticPathSetRef.current.has(nextRoute.path)) {
+                    const rscPath = encodeRoutePath(nextRoute.path);
+                    const cached = prefetchCacheRef.current.get(
+                      prefetchCacheKey(rscPath, nextRoute.query),
+                    );
+                    const prefetched =
+                      cached && cached.expireAt > Date.now()
+                        ? cached.promise
+                        : undefined;
                     await refetch(
-                      encodeRoutePath(nextRoute.path),
+                      rscPath,
                       getRscParams(nextRoute.query),
+                      prefetched
+                        ? { unstable_prefetched: prefetched }
+                        : undefined,
                     );
                   }
                   if (signal.aborted) return resolve();
