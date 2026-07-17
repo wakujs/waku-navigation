@@ -84,8 +84,8 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(happy-dom@20.10.4)(vite@8.0.16(@types/node@25.9.3)(terser@5.48.0))
       waku:
-        specifier: https://pkg.pr.new/waku@5cff37e
-        version: https://pkg.pr.new/waku@5cff37e(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0)
+        specifier: 1.0.0-beta.7
+        version: 1.0.0-beta.7(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0)
       waku-navigation:
         specifier: 'link:'
         version: 'link:'
@@ -2261,9 +2261,8 @@ packages:
       jsdom:
         optional: true
 
-  waku@https://pkg.pr.new/waku@5cff37e:
-    resolution: {integrity: sha512-Tu9+nOrrH7387Md5xp8RBPGxxLVSfdlBmmYRyyDFHpTHeY2xADJ1wOmR3ygRxXDaV/R6+IbLjjeK18dPKkTEaw==, tarball: https://pkg.pr.new/waku@5cff37e}
-    version: 1.0.0-beta.6
+  waku@1.0.0-beta.7:
+    resolution: {integrity: sha512-ZGTuyEX5LFytKfqa0xNRKKT603XN5pOz9n9GLUICKE0i4Z8/oYgq6soQizyArqZFLBN5NvieA3yE7XBzxfcc5Q==}
     engines: {node: ^26.0.0 || ^24.0.0 || ^22.15.0}
     hasBin: true
     peerDependencies:
@@ -4658,7 +4657,7 @@ snapshots:
     transitivePeerDependencies:
       - msw
 
-  waku@https://pkg.pr.new/waku@5cff37e(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0):
+  waku@1.0.0-beta.7(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0):
     dependencies:
       '@hono/node-server': 2.0.6(hono@4.12.27)
       '@vitejs/plugin-react': 6.0.3(vite@8.0.16(@types/node@25.9.3)(terser@5.48.0))
