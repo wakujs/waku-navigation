@@ -210,14 +210,14 @@ test('static routes skip the refetch on revisit', async ({ page }) => {
   expect(rscRequests.length).toBe(before);
 });
 
-test('refetch sends X-Waku-Router-Skip mapping cached element ids to etags', async ({
+test('refetch sends X-Waku-Etags mapping cached element ids to etags', async ({
   page,
 }) => {
-  const skipHeaders: string[] = [];
+  const etagHeaders: string[] = [];
   page.on('request', (req) => {
     if (req.url().includes('/RSC/')) {
-      const h = req.headers()['x-waku-router-skip'];
-      if (h !== undefined) skipHeaders.push(h);
+      const h = req.headers()['x-waku-etags'];
+      if (h !== undefined) etagHeaders.push(h);
     }
   });
   await page.goto('/');
@@ -226,15 +226,15 @@ test('refetch sends X-Waku-Router-Skip mapping cached element ids to etags', asy
   await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
   await page.waitForTimeout(100);
 
-  expect(skipHeaders.length).toBeGreaterThan(0);
+  expect(etagHeaders.length).toBeGreaterThan(0);
   // The header should be a JSON object mapping slot ids to etags; not just
   // "{}" (we had initial elements from SSR before this navigation).
-  const parsed: unknown = JSON.parse(skipHeaders[0]!);
+  const parsed: unknown = JSON.parse(etagHeaders[0]!);
   expect(Array.isArray(parsed)).toBe(false);
   expect(typeof parsed).toBe('object');
   const entries = Object.entries(parsed as Record<string, unknown>);
   expect(entries.length).toBeGreaterThan(0);
-  // Each etag is either a string (dynamic slot) or waku's numeric static
+  // Each etag is either a string (dynamic slot) or waku's numeric immutable
   // sentinel 1 (static slot); /'s slots are static, so they come back as 1.
   for (const [, etag] of entries) {
     expect(['string', 'number']).toContain(typeof etag);

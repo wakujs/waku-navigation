@@ -84,8 +84,8 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(happy-dom@20.10.4)(vite@8.0.16(@types/node@25.9.3)(terser@5.48.0))
       waku:
-        specifier: https://pkg.pr.new/waku@cfb2caf
-        version: https://pkg.pr.new/waku@cfb2caf(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0)
+        specifier: https://pkg.pr.new/waku@5cff37e
+        version: https://pkg.pr.new/waku@5cff37e(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0)
       waku-navigation:
         specifier: 'link:'
         version: 'link:'
@@ -2261,8 +2261,8 @@ packages:
       jsdom:
         optional: true
 
-  waku@https://pkg.pr.new/waku@cfb2caf:
-    resolution: {integrity: sha512-oFWXAyYXxkRjlyEErjjTjoAA/1dpV2Xa9+r060KJpppAf2Sh/Y8suAuVkZ/NKWH78ohCbeIbD4tQo64P1zMopA==, tarball: https://pkg.pr.new/waku@cfb2caf}
+  waku@https://pkg.pr.new/waku@5cff37e:
+    resolution: {integrity: sha512-Tu9+nOrrH7387Md5xp8RBPGxxLVSfdlBmmYRyyDFHpTHeY2xADJ1wOmR3ygRxXDaV/R6+IbLjjeK18dPKkTEaw==, tarball: https://pkg.pr.new/waku@5cff37e}
     version: 1.0.0-beta.6
     engines: {node: ^26.0.0 || ^24.0.0 || ^22.15.0}
     hasBin: true
@@ -4658,7 +4658,7 @@ snapshots:
     transitivePeerDependencies:
       - msw
 
-  waku@https://pkg.pr.new/waku@cfb2caf(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0):
+  waku@https://pkg.pr.new/waku@5cff37e(@types/node@25.9.3)(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(webpack@5.104.1))(react@19.2.7)(terser@5.48.0):
     dependencies:
       '@hono/node-server': 2.0.6(hono@4.12.27)
       '@vitejs/plugin-react': 6.0.3(vite@8.0.16(@types/node@25.9.3)(terser@5.48.0))

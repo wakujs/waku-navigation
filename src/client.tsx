@@ -24,7 +24,6 @@ import {
   Root,
   Slot,
   unstable_prefetchRsc as prefetchRsc,
-  unstable_registerFetchEnhancer as registerFetchEnhancer,
   useElementsPromise_UNSTABLE as useElementsPromise,
   useRefetch,
 } from 'waku/minimal/client';
@@ -41,7 +40,6 @@ import {
   unstable_IS_STATIC_ID as IS_STATIC_ID,
   unstable_ROUTE_ID as ROUTE_ID,
   unstable_RouterContext as RouterContext,
-  unstable_SKIP_HEADER as SKIP_HEADER,
   unstable_useResolveSearchCodec as useResolveSearchCodec,
   type Unstable_BuildRouteHrefTarget as BuildRouteHrefTarget,
   type Unstable_RouteHref as RouteHref,
@@ -56,10 +54,19 @@ type Elements = Record<string, unknown>;
 type Route = { path: string; query: string; hash: string };
 
 const NOT_FOUND_PATH = '/404';
-// Mirror waku's unexported etag constants (router/isomorphic-utils/route-path).
-// STATIC_ETAG is a numeric sentinel a static slot carries instead of a string.
-const ETAG_ID_PREFIX = 'ETAG:';
-const STATIC_ETAG = 1;
+
+// Router-scoped prefetch cache mirroring waku/router's. A prefetched route tree
+// is held here keyed by (rscPath, query) and threaded back into refetch via
+// `unstable_prefetched`, since waku's `prefetchRsc` now returns the tree for the
+// caller to hold rather than populating a store that refetch reads implicitly.
+type PrefetchEntry = {
+  promise: ReturnType<typeof prefetchRsc>;
+  expireAt: number;
+};
+const PREFETCH_TTL = 60_000;
+const PREFETCH_LIMIT = 100;
+const prefetchCacheKey = (rscPath: string, query: string) =>
+  rscPath + '\0' + query;
 
 type NavigationStatus = { pending?: boolean };
 type TransitionFunction = () => void | Promise<void>;
@@ -391,7 +398,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
   }, []);
   const registryRef = useRef(new Map<string, NavStatusEntry>());
   const staticPathSetRef = useRef(new Set<string>());
-  const cachedEtagsRef = useRef<Record<string, string | number>>({});
   // Stable instance: <Slice> mutates this Set across renders.
   const fetchingSlices = useMemo(() => new Set<string>(), []);
   useEffect(() => {
@@ -403,19 +409,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
         if (routeData && elements[IS_STATIC_ID]) {
           staticPathSetRef.current.add(routeData[0]);
         }
-        const etags: Record<string, string | number> = {};
-        for (const [key, value] of Object.entries(elements)) {
-          // Keep the static sentinel; for string tags drop empty (clear signal)
-          // and non-Latin1 (breaks the fetch header).
-          if (
-            key.startsWith(ETAG_ID_PREFIX) &&
-            (value === STATIC_ETAG ||
-              (typeof value === 'string' && /^[ -ÿ]+$/.test(value)))
-          ) {
-            etags[key.slice(ETAG_ID_PREFIX.length)] = value;
-          }
-        }
-        cachedEtagsRef.current = etags;
       },
       () => {},
     );
@@ -426,17 +419,6 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
       registryRef.current.delete(id);
     };
   }, []);
-  // Send our cached etags via X-Waku-Router-Skip so the server can skip
-  // re-rendering slots whose etag still matches.
-  useEffect(
-    () =>
-      registerFetchEnhancer((fetchFn) => (input, init) => {
-        const headers = new Headers(init?.headers);
-        headers.set(SKIP_HEADER, JSON.stringify(cachedEtagsRef.current));
-        return fetchFn(input, { ...init, headers });
-      }),
-    [],
-  );
   // Waku's prefetch cache keys params by identity, so reuse one object per
   // query string or prefetch entries get invalidated.
   const rscParamsByQueryRef = useRef(new Map<string, URLSearchParams>());
@@ -474,10 +456,25 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     }),
     [routeChangeListeners],
   );
+  const prefetchCacheRef = useRef(new Map<string, PrefetchEntry>());
   const prefetchRoute = useCallback(
     (next: Route) => {
       if (staticPathSetRef.current.has(next.path)) return;
-      prefetchRsc(encodeRoutePath(next.path), getRscParams(next.query));
+      const rscPath = encodeRoutePath(next.path);
+      const key = prefetchCacheKey(rscPath, next.query);
+      const cache = prefetchCacheRef.current;
+      const now = Date.now();
+      const existing = cache.get(key);
+      if (!existing || existing.expireAt <= now) {
+        if (cache.size >= PREFETCH_LIMIT) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+        }
+        cache.set(key, {
+          promise: prefetchRsc(rscPath, getRscParams(next.query)),
+          expireAt: now + PREFETCH_TTL,
+        });
+      }
       // When the build publishes it, __WAKU_ROUTER_PREFETCH__ yields the
       // route's JS chunk ids to preload.
       (
@@ -499,7 +496,7 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     if (!(import.meta as { hot?: unknown }).hot) return;
     const refetchRoute = () => {
       staticPathSetRef.current.clear();
-      cachedEtagsRef.current = {};
+      prefetchCacheRef.current.clear();
       refetch(encodeRoutePath(route.path), getRscParams(route.query));
     };
     const listeners = ((
@@ -576,9 +573,20 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                 let targetRoute = nextRoute;
                 try {
                   if (!staticPathSetRef.current.has(nextRoute.path)) {
+                    const rscPath = encodeRoutePath(nextRoute.path);
+                    const cached = prefetchCacheRef.current.get(
+                      prefetchCacheKey(rscPath, nextRoute.query),
+                    );
+                    const prefetched =
+                      cached && cached.expireAt > Date.now()
+                        ? cached.promise
+                        : undefined;
                     await refetch(
-                      encodeRoutePath(nextRoute.path),
+                      rscPath,
                       getRscParams(nextRoute.query),
+                      prefetched
+                        ? { unstable_prefetched: prefetched }
+                        : undefined,
                     );
                   }
                   if (signal.aborted) return resolve();

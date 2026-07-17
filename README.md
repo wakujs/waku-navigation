@@ -311,7 +311,6 @@ import {
   unstable_HAS404_ID,
   unstable_IS_STATIC_ID,
   unstable_ROUTE_ID,
-  unstable_SKIP_HEADER,
   unstable_encodeRoutePath,
   unstable_encodeSliceId,
   unstable_getRouteSlotId,
@@ -340,8 +339,8 @@ These are all handled inside the navigate-event listener so apps usually don't n
 - **React's default transition indicator** — React (≥19.2) fires a fake same-URL navigation tagged `info: 'react-transition'` for every transition, intercepting it to show the browser's native spinner. The router skips these (they aren't route changes), so an unrelated `useTransition` anywhere in your app never triggers a refetch.
 - **404 on the client** — a refetch that throws with `getErrorInfo(err)?.status === 404` is handled by refetching `/404` and pointing the slot there, mirroring Waku's behavior. The URL still reflects the user's request.
 - **Static route cache** — routes with `getConfig({ render: 'static' })` are added to a `staticPathSet` after their first fetch; revisits skip the refetch entirely (the RSC payload is already in Waku's store).
-- **`X-Waku-Router-Skip` header** — every refetch sends the etags of elements we already have (harvested from the RSC payload's `ETAG:`-prefixed entries) so the server can skip re-rendering shared layouts/slices whose etag still matches.
-- **HMR cache invalidation** — when Waku's dev runtime fires `globalThis.__WAKU_RSC_RELOAD_LISTENERS__` (Vite HMR update), the router clears `staticPathSet` and `cachedEtags` and refetches the current route. Guarded by `import.meta.hot` so it's stripped in production.
+- **`X-Waku-Etags` header** — every refetch sends the etags of elements already in the store so the server can skip re-rendering shared layouts/slices whose etag still matches. Waku's `useRefetch` (from `waku/minimal/client`) tracks these etags and sets the header itself, so the router gets this for free.
+- **HMR cache invalidation** — when Waku's dev runtime fires `globalThis.__WAKU_RSC_RELOAD_LISTENERS__` (Vite HMR update), the router clears `staticPathSet` and refetches the current route (Waku's `minimal` client clears its own etag cache via the reload listener it registers first). Guarded by `import.meta.hot` so it's stripped in production.
 
 ---
 
