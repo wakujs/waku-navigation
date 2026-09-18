@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import { EventLog } from '../components/event-log.js';
 import { RouteInfo } from '../components/route-info.js';
 import { SearchCodecs } from '../components/search-codecs-provider.js';
 
@@ -15,7 +14,6 @@ export default function HomeLayout({ children }: { children: ReactNode }) {
         </li>
       </ul>
       <RouteInfo />
-      <EventLog />
       <main>{children}</main>
     </SearchCodecs>
   );

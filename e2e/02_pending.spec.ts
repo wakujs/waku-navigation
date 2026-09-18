@@ -111,13 +111,12 @@ test('programmatic navigation lights every <Link> to the destination', async ({
   await expect(page.getByTestId('pending')).toHaveCount(0);
 
   // No source element: matched by destination, so both the plain and the
-  // prefetch <Link> to /slow light up (the view-transition one is bypassed).
+  // prefetch <Link> to /slow light up.
   await page.evaluate(() => {
     void window.navigation.navigate('/slow').finished;
   });
   await expect(page.getByTestId('pending')).toBeVisible();
   await expect(page.getByTestId('pending-alt')).toBeVisible();
-  await expect(page.getByTestId('pending-vt')).toHaveCount(0);
   await expect(page.locator('h1')).toHaveText('Slow Page');
   await expect(page.getByTestId('pending')).toHaveCount(0);
 });
@@ -136,25 +135,6 @@ test('browser back/forward lights the matching <Link>', async ({ page }) => {
   await expect(page.getByTestId('pending')).toBeVisible();
   await expect(page.locator('h1')).toHaveText('Slow Page');
   await expect(page.getByTestId('pending')).toHaveCount(0);
-});
-
-test('unstable_startTransition link navigates but bypasses status', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-  await expect(page.getByTestId('pending-vt')).toHaveCount(0);
-
-  // The view-transition <Link> wraps the commit in its own transition, so its
-  // status stays dark throughout while the navigation still completes.
-  await page
-    .getByRole('link', { name: 'Slow (view transition)', exact: true })
-    .click();
-  for (let i = 0; i < 12; i++) {
-    expect(await page.getByTestId('pending-vt').count()).toBe(0);
-    await page.waitForTimeout(50);
-  }
-  await expect(page.locator('h1')).toHaveText('Slow Page');
 });
 
 test('ignores React default-transition-indicator fake navigations', async ({

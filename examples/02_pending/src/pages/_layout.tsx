@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link } from 'waku-navigation';
 import { NavStatus } from '../components/nav-status.js';
-import { ViewTransitionLink } from '../components/view-transition-link.js';
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
@@ -25,12 +24,6 @@ export default function Layout({ children }: { children: ReactNode }) {
           <Link to="/slow" unstable_prefetchOnEnter>
             Slow (alt) <NavStatus testid="pending-alt" label="(loading…)" />
           </Link>
-        </li>
-        <li>
-          {/* View Transitions: unstable_startTransition is a function, so it
-              lives in a client component. Status is bypassed, so it stays
-              dark. */}
-          <ViewTransitionLink />
         </li>
       </ul>
       <main>{children}</main>

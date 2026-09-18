@@ -338,26 +338,6 @@ test('useRouter().push with scroll: false preserves the current scroll position'
   expect(await page.evaluate(() => window.scrollY)).toBe(500);
 });
 
-test('useRouter().unstable_events emits start and complete on route change', async ({
-  page,
-}) => {
-  await page.goto('/');
-  await waitForHydration(page);
-  await expect(page.getByTestId('event-log')).toHaveText('');
-
-  await page.locator('a', { hasText: 'About' }).click();
-  await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
-  await expect(page.getByTestId('event-log')).toHaveText(
-    'start:/about|complete:/about',
-  );
-
-  await page.locator('a', { hasText: 'Home' }).click();
-  await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
-  await expect(page.getByTestId('event-log')).toHaveText(
-    'start:/about|complete:/about|start:/|complete:/',
-  );
-});
-
 test('HMR reload listener clears the static cache and refetches the current route', async ({
   page,
 }) => {
@@ -562,4 +542,13 @@ test('useSearch_UNSTABLE / useSetSearch_UNSTABLE read and write typed search', a
   await page.getByTestId('set-tab-updater').click();
   await expect(page).toHaveURL('/search?tab=faq-x');
   await expect(page.getByTestId('search-tab')).toHaveText('tab: faq-x');
+
+  // The <Link> object form serializes `search` with the route's codec.
+  await expect(page.getByTestId('search-link-pricing')).toHaveAttribute(
+    'href',
+    '/search?tab=pricing',
+  );
+  await page.getByTestId('search-link-pricing').click();
+  await expect(page).toHaveURL('/search?tab=pricing');
+  await expect(page.getByTestId('search-tab')).toHaveText('tab: pricing');
 });
