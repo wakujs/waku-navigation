@@ -21,68 +21,74 @@ import {
 } from 'react';
 import { preloadModule } from 'react-dom';
 import {
-  Root,
-  Slot,
-  unstable_prefetchRsc as prefetchRsc,
+  Root_UNSTABLE as Root,
+  Slot_UNSTABLE as Slot,
+  unstable_addBase as addBase,
   useElementsPromise_UNSTABLE as useElementsPromise,
-  useRefetch,
+  useMergeElements_UNSTABLE as useMergeElements,
+  useRegisterRscReloadListener_UNSTABLE as useRegisterRscReloadListener,
 } from 'waku/minimal/client';
 import {
-  Slice,
-  Unstable_SearchCodecsProvider,
-  unstable_addBase as addBase,
+  RouterHostContext_UNSTABLE as RouterHostContext,
+  SearchCodecsProvider_UNSTABLE,
+  Slice_UNSTABLE as Slice,
+  unstable_buildMergePatch as buildMergePatch,
   unstable_buildRouteHref as buildRouteHref,
   unstable_encodeRoutePath as encodeRoutePath,
-  unstable_getErrorInfo as getErrorInfo,
-  unstable_matchRouteParams as matchRouteParams,
-  unstable_parseRoute as parseRoute,
+  unstable_getRouteFromElements as getRouteFromElements,
   unstable_getRouteSlotId as getRouteSlotId,
-  unstable_IS_STATIC_ID as IS_STATIC_ID,
-  unstable_ROUTE_ID as ROUTE_ID,
-  unstable_RouterContext as RouterContext,
-  unstable_useResolveSearchCodec as useResolveSearchCodec,
+  unstable_has404FromElements as has404FromElements,
+  unstable_isStaticFromElements as isStaticFromElements,
+  unstable_load as load,
+  unstable_parseRoute as parseRoute,
+  useHmrRefetch_UNSTABLE as useHmrRefetch,
+  useInitialRoute_UNSTABLE as useInitialRoute,
+  useInitialRscParams_UNSTABLE as useInitialRscParams,
+  useParams_UNSTABLE,
+  useResolveSearchCodec_UNSTABLE as useResolveSearchCodec,
+  useRouterCache_UNSTABLE as useRouterCache,
+  useSearch_UNSTABLE,
+  useSetSearch_UNSTABLE,
   type Unstable_BuildRouteHrefTarget as BuildRouteHrefTarget,
+  type Unstable_Loaded as Loaded,
   type Unstable_RouteHref as RouteHref,
-  type Unstable_RouteParams as RouteParams,
   type Unstable_RoutePath as RoutePath,
-  type Unstable_RouteSearch as RouteSearch,
-} from 'waku/router/client';
+  type Unstable_RouterHost as RouterHost,
+} from 'waku/router/client-core';
 
-export { Slice, Unstable_SearchCodecsProvider };
+export {
+  SearchCodecsProvider_UNSTABLE,
+  Slice,
+  useParams_UNSTABLE,
+  useSearch_UNSTABLE,
+  useSetSearch_UNSTABLE,
+};
 
-type Elements = Record<string, unknown>;
+/** @deprecated Use `SearchCodecsProvider_UNSTABLE`. */
+export const Unstable_SearchCodecsProvider = SearchCodecsProvider_UNSTABLE;
+
 type Route = { path: string; query: string; hash: string };
 
 const NOT_FOUND_PATH = '/404';
 
-// Router-scoped prefetch cache mirroring waku/router's. A prefetched route tree
-// is held here keyed by (rscPath, query) and threaded back into refetch via
-// `unstable_prefetched`, since waku's `prefetchRsc` now returns the tree for the
-// caller to hold rather than populating a store that refetch reads implicitly.
-type PrefetchEntry = {
-  promise: ReturnType<typeof prefetchRsc>;
-  expireAt: number;
-};
-const PREFETCH_TTL = 60_000;
-const PREFETCH_LIMIT = 100;
-const prefetchCacheKey = (rscPath: string, query: string) =>
-  rscPath + '\0' + query;
-
 type NavigationStatus = { pending?: boolean };
-type TransitionFunction = () => void | Promise<void>;
 
 type NavStatusEntry = {
   getElement: () => HTMLAnchorElement | null;
   href: string;
   scroll: boolean | undefined;
-  unstable_startTransition: ((fn: TransitionFunction) => void) | undefined;
   setOptimisticStatus: (status: NavigationStatus) => void;
 };
 type RegisterFn = (id: string, entry: NavStatusEntry) => () => void;
 
-const noopRegister: RegisterFn = () => () => {};
-const NavStatusRegistryContext = createContext<{ register: RegisterFn }>({
-  register: noopRegister,
+// Defaults apply during SSR, where waku's INTERNAL_ServerRouter provides only
+// the RouterHost.
+const RouterContext = createContext<{
+  register: RegisterFn;
+  prefetchRoute: (route: Route) => void;
+}>({
+  register: () => () => {},
+  prefetchRoute: () => {},
 });
 
 const NavigationStatusContext = createContext<NavigationStatus>({});
@@ -100,7 +106,7 @@ export const useNavigationStatus_UNSTABLE = (): NavigationStatus =>
 export type LinkProps<Path extends RoutePath> = {
   /**
    * Destination, type-checked against your app's generated routes. Either an
-   * href string or, for a parameterized route, `{ to, params, hash }`.
+   * href string or, for a parameterized route, `{ to, params, search, hash }`.
    */
   to: RouteHref | BuildRouteHrefTarget<Path>;
   children: ReactNode;
@@ -113,12 +119,6 @@ export type LinkProps<Path extends RoutePath> = {
   unstable_prefetchOnEnter?: boolean;
   /** Prefetch the route when the link scrolls into view. */
   unstable_prefetchOnView?: boolean;
-  /**
-   * Overrides how the route-commit transition is started, e.g. to integrate
-   * the browser View Transitions API. When set, the pending state is bypassed,
-   * so {@link useNavigationStatus_UNSTABLE} stays `{}` for this link.
-   */
-  unstable_startTransition?: ((fn: TransitionFunction) => void) | undefined;
   ref?: Ref<HTMLAnchorElement> | undefined;
 } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'>;
 
@@ -134,16 +134,15 @@ export function Link<Path extends RoutePath>({
   scroll,
   unstable_prefetchOnEnter,
   unstable_prefetchOnView,
-  unstable_startTransition,
   ref: refProp,
   ...props
 }: LinkProps<Path>) {
   const base = (import.meta as { env?: { WAKU_CONFIG_BASE_PATH?: string } }).env
     ?.WAKU_CONFIG_BASE_PATH;
-  const href = typeof to === 'string' ? to : buildRouteHref(to);
+  const resolveCodec = useResolveSearchCodec();
+  const href = typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
   const resolvedTo = base ? addBase(href, base) : href;
-  const ctx = useContext(RouterContext);
-  const { register } = useContext(NavStatusRegistryContext);
+  const { register, prefetchRoute } = useContext(RouterContext);
   const [status, setOptimisticStatus] = useOptimistic<NavigationStatus>({});
   const elementRef = useRef<HTMLAnchorElement | null>(null);
   const setRef = useCallback(
@@ -162,17 +161,9 @@ export function Link<Path extends RoutePath>({
         getElement: () => elementRef.current,
         href: resolvedTo,
         scroll,
-        unstable_startTransition,
         setOptimisticStatus,
       }),
-    [
-      id,
-      resolvedTo,
-      scroll,
-      unstable_startTransition,
-      register,
-      setOptimisticStatus,
-    ],
+    [id, resolvedTo, scroll, register, setOptimisticStatus],
   );
   useEffect(() => {
     if (!unstable_prefetchOnView || !elementRef.current) return;
@@ -182,7 +173,7 @@ export function Link<Path extends RoutePath>({
           if (!entry.isIntersecting) continue;
           const url = new URL(resolvedTo, window.location.href);
           if (url.href !== window.location.href) {
-            ctx?.prefetchRoute(parseRoute(url));
+            prefetchRoute(parseRoute(url));
           }
         }
       },
@@ -190,13 +181,13 @@ export function Link<Path extends RoutePath>({
     );
     observer.observe(elementRef.current);
     return () => observer.disconnect();
-  }, [unstable_prefetchOnView, resolvedTo, ctx]);
+  }, [unstable_prefetchOnView, resolvedTo, prefetchRoute]);
   const onMouseEnter: AnchorHTMLAttributes<HTMLAnchorElement>['onMouseEnter'] =
     unstable_prefetchOnEnter
       ? (event) => {
           const url = new URL(resolvedTo, window.location.href);
           if (url.href !== window.location.href) {
-            ctx?.prefetchRoute(parseRoute(url));
+            prefetchRoute(parseRoute(url));
           }
           props.onMouseEnter?.(event);
         }
@@ -224,19 +215,16 @@ type Prefetch = {
   (to: RouteHref): void;
   <Path extends RoutePath>(target: BuildRouteHrefTarget<Path>): void;
 };
-type RouteChangeEvents = {
-  on: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
-  off: (name: 'start' | 'complete', handler: (route: Route) => void) => void;
-};
-const noopEvents: RouteChangeEvents = { on: () => {}, off: () => {} };
 /**
  * Imperative router handle: the current `path` / `query` / `hash`, plus
- * `push` / `replace` / `reload` / `back` / `forward` / `prefetch` and
- * `unstable_events`. Same shape as `waku/router/client`'s `useRouter`.
+ * `push` / `replace` / `reload` / `back` / `forward` / `prefetch`. Same shape
+ * as `waku/router/client`'s `useRouter`.
  */
 export function useRouter() {
-  const ctx = useContext(RouterContext);
-  const route: Route = ctx?.route ?? { path: '/', query: '', hash: '' };
+  const host = useContext(RouterHostContext);
+  const { prefetchRoute } = useContext(RouterContext);
+  const resolveCodec = useResolveSearchCodec();
+  const route: Route = host?.route ?? { path: '/', query: '', hash: '' };
   return {
     path: route.path,
     query: route.query,
@@ -245,7 +233,8 @@ export function useRouter() {
       to: RouteHref | BuildRouteHrefTarget<RoutePath>,
       options?: NavigateOptions,
     ) => {
-      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      const href =
+        typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
       await window.navigation.navigate(href, {
         history: 'push',
         info: { scroll: options?.scroll },
@@ -255,7 +244,8 @@ export function useRouter() {
       to: RouteHref | BuildRouteHrefTarget<RoutePath>,
       options?: NavigateOptions,
     ) => {
-      const href = typeof to === 'string' ? to : buildRouteHref(to);
+      const href =
+        typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
       await window.navigation.navigate(href, {
         history: 'replace',
         info: { scroll: options?.scroll },
@@ -269,86 +259,44 @@ export function useRouter() {
       window.navigation.forward();
     },
     prefetch: ((to: RouteHref | BuildRouteHrefTarget<RoutePath>) => {
-      const href = typeof to === 'string' ? to : buildRouteHref(to);
-      ctx?.prefetchRoute(parseRoute(new URL(href, window.location.href)));
+      const href =
+        typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
+      prefetchRoute(parseRoute(new URL(href, window.location.href)));
     }) as Prefetch,
-    unstable_events: (ctx?.routeChangeEvents ??
-      noopEvents) as RouteChangeEvents,
   };
 }
 
-/**
- * Read the current route's params, typed from the `from` path, or `null` when
- * the current path does not match it. Mirrors `waku/router`'s
- * `useParams_UNSTABLE`.
- */
-export function useParams_UNSTABLE<Path extends RoutePath>({
-  from,
-}: {
-  from: Path;
-}): RouteParams<Path> | null {
-  const { path } = useRouter();
-  return useMemo(() => matchRouteParams(from, path), [from, path]);
-}
+// RouterHost contract: a superseded navigation settles instead of rejecting.
+const navigateHost: RouterHost['navigate'] = async (
+  href,
+  { history, scroll },
+) => {
+  try {
+    await window.navigation.navigate(href, { history, info: { scroll } })
+      .finished;
+  } catch (err) {
+    if (!(err instanceof DOMException && err.name === 'AbortError')) throw err;
+  }
+};
 
-/**
- * Read the current route's typed `search`, parsed with the route's codec
- * (provided via {@link Unstable_SearchCodecsProvider}), or `null` when the
- * current path does not match `from` or the route has no codec. Mirrors
- * `waku/router`'s `useSearch_UNSTABLE`.
- */
-export function useSearch_UNSTABLE<Path extends RoutePath>({
-  from,
-}: {
-  from: Path;
-}): RouteSearch<Path> | null {
-  const { path, query } = useRouter();
-  const resolveCodec = useResolveSearchCodec();
-  return useMemo(() => {
-    if (matchRouteParams(from, path) === null) return null;
-    const codec = resolveCodec(from);
-    return codec ? (codec.parse(query) as RouteSearch<Path>) : null;
-  }, [from, path, query, resolveCodec]);
-}
-
-type SetSearch<Path extends RoutePath> = (
-  update:
-    | Partial<RouteSearch<Path>>
-    | ((prev: RouteSearch<Path>) => Partial<RouteSearch<Path>>),
-  options?: { history?: 'push' | 'replace'; scroll?: boolean },
-) => Promise<void>;
-
-/**
- * Returns a setter for the current route's typed `search`, serialized with the
- * route's codec (provided via {@link Unstable_SearchCodecsProvider}). It
- * navigates to the same path with the new query (push by default). A no-op when
- * the current path does not match `from` or has no codec. Mirrors `waku/router`'s
- * `useSetSearch_UNSTABLE`.
- */
-export function useSetSearch_UNSTABLE<Path extends RoutePath>({
-  from,
-}: {
-  from: Path;
-}): SetSearch<Path> {
-  const { path, query } = useRouter();
-  const resolveCodec = useResolveSearchCodec();
-  return useCallback<SetSearch<Path>>(
-    async (update, options) => {
-      if (matchRouteParams(from, path) === null) return;
-      const codec = resolveCodec(from);
-      if (!codec) return;
-      const prev = codec.parse(query) as RouteSearch<Path>;
-      const partial = typeof update === 'function' ? update(prev) : update;
-      const url = new URL(window.location.href);
-      url.search = codec.serialize({ ...prev, ...partial });
-      await window.navigation.navigate(url.href, {
-        history: options?.history ?? 'push',
-        info: { scroll: options?.scroll },
-      }).finished;
-    },
-    [from, path, query, resolveCodec],
-  );
-}
+// ROUTE_ID names the route the server rendered: '/404' for a missing route, or
+// the target of a redirect it resolved. Mirrors waku's history binding.
+const getLandedRoute = ({ route, url, elements }: Loaded): Route => {
+  const served = getRouteFromElements(elements);
+  if (
+    served &&
+    served.path !== NOT_FOUND_PATH &&
+    (served.path !== route.path ||
+      (!isStaticFromElements(elements) && served.query !== route.query))
+  ) {
+    return served;
+  }
+  return {
+    path: served?.path ?? route.path,
+    query: route.query,
+    hash: url.hash,
+  };
+};
 
 // Same origin + path + query (not pathname; fragment ignored). Malformed input
 // returns false rather than throwing.
@@ -365,116 +313,39 @@ const routeMatchesHref = (href: string, route: Route): boolean => {
 };
 
 function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
-  const refetch = useRefetch();
-  const elementsPromise = useElementsPromise();
-  const [routeState, setRoute] = useState<Route>();
-  let route = routeState;
-  if (route === undefined) {
-    // First render only. ROUTE_ID records the route the server actually
-    // rendered, so an unknown URL served the /404 page resolves to '/404'. This
-    // must not suspend on later renders: suspending inside a navigation
-    // transition would keep it from ever committing.
-    const elements = use(elementsPromise) as Elements;
-    const routeData = elements[ROUTE_ID] as
-      | [path: string, query: string]
-      | undefined;
-    route =
-      routeData && routeData[0] !== fallbackRoute.path
-        ? { path: routeData[0], query: routeData[1], hash: '' }
-        : { ...fallbackRoute, hash: '' };
-    setRoute(route);
-  }
-  // Rethrow during render so the user's <ErrorBoundary> catches non-404
-  // failures; cleared by the next successful navigation.
+  const elements = use(useElementsPromise());
+  const mergeElements = useMergeElements();
+  const registerRscReloadListener = useRegisterRscReloadListener();
+  const cache = useRouterCache();
+  // Resolves an unknown URL the server answered with the /404 page to '/404',
+  // and restores the hash (SSR sends no fragment) after hydration.
+  const initialRoute = useInitialRoute(fallbackRoute);
+  const [committedRoute, setRoute] = useState<Route>();
+  const route = committedRoute ?? initialRoute;
+  // Rethrow during render so the user's <ErrorBoundary> catches failures;
+  // cleared by the next successful navigation.
   const [renderError, setRenderError] = useState<unknown>(null);
   if (renderError) throw renderError;
+  const elementsRef = useRef(elements);
+  const routeRef = useRef(route);
+  useLayoutEffect(() => {
+    elementsRef.current = elements;
+    routeRef.current = route;
+  });
   useEffect(() => {
-    // SSR sends no fragment, so the hash starts ''; upgrade it post-hydration.
-    if (fallbackRoute.hash) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setRoute((r) => ({ ...(r as Route), hash: fallbackRoute.hash }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    cache.learnStaticFromElements(elements);
+  }, [cache, elements]);
   const registryRef = useRef(new Map<string, NavStatusEntry>());
-  const staticPathSetRef = useRef(new Set<string>());
-  // Stable instance: <Slice> mutates this Set across renders.
-  const fetchingSlices = useMemo(() => new Set<string>(), []);
-  useEffect(() => {
-    elementsPromise.then(
-      (elements: Elements) => {
-        const routeData = elements[ROUTE_ID] as
-          | [path: string, query: string]
-          | undefined;
-        if (routeData && elements[IS_STATIC_ID]) {
-          staticPathSetRef.current.add(routeData[0]);
-        }
-      },
-      () => {},
-    );
-  }, [elementsPromise]);
   const register = useCallback<RegisterFn>((id, entry) => {
     registryRef.current.set(id, entry);
     return () => {
       registryRef.current.delete(id);
     };
   }, []);
-  // Waku's prefetch cache keys params by identity, so reuse one object per
-  // query string or prefetch entries get invalidated.
-  const rscParamsByQueryRef = useRef(new Map<string, URLSearchParams>());
-  const getRscParams = useCallback((query: string) => {
-    let params = rscParamsByQueryRef.current.get(query);
-    if (!params) {
-      params = new URLSearchParams({ query });
-      rscParamsByQueryRef.current.set(query, params);
-    }
-    return params;
-  }, []);
-  type RouteEventName = 'start' | 'complete';
-  type RouteEventListener = (route: Route) => void;
-  const routeChangeListeners = useMemo(
-    () => ({
-      start: new Set<RouteEventListener>(),
-      complete: new Set<RouteEventListener>(),
-    }),
-    [],
-  );
-  const emitRouteEvent = useCallback(
-    (name: RouteEventName, r: Route) => {
-      for (const listener of routeChangeListeners[name]) listener(r);
-    },
-    [routeChangeListeners],
-  );
-  const routeChangeEvents = useMemo(
-    () => ({
-      on: (name: RouteEventName, handler: RouteEventListener) => {
-        routeChangeListeners[name].add(handler);
-      },
-      off: (name: RouteEventName, handler: RouteEventListener) => {
-        routeChangeListeners[name].delete(handler);
-      },
-    }),
-    [routeChangeListeners],
-  );
-  const prefetchCacheRef = useRef(new Map<string, PrefetchEntry>());
   const prefetchRoute = useCallback(
     (next: Route) => {
-      if (staticPathSetRef.current.has(next.path)) return;
-      const rscPath = encodeRoutePath(next.path);
-      const key = prefetchCacheKey(rscPath, next.query);
-      const cache = prefetchCacheRef.current;
-      const now = Date.now();
-      const existing = cache.get(key);
-      if (!existing || existing.expireAt <= now) {
-        if (cache.size >= PREFETCH_LIMIT) {
-          const oldest = cache.keys().next().value;
-          if (oldest !== undefined) cache.delete(oldest);
-        }
-        cache.set(key, {
-          promise: prefetchRsc(rscPath, getRscParams(next.query)),
-          expireAt: now + PREFETCH_TTL,
-        });
-      }
+      if (cache.canReuseStaticRoute(next, elementsRef.current)) return;
+      cache.prefetchRoute(next);
       // When the build publishes it, __WAKU_ROUTER_PREFETCH__ yields the
       // route's JS chunk ids to preload.
       (
@@ -488,33 +359,24 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
         preloadModule(id, { as: 'script' }),
       );
     },
-    [getRscParams],
+    [cache],
   );
-  // Vite HMR (dev only): clear caches and refetch the current route when Waku's
-  // runtime fires __WAKU_RSC_RELOAD_LISTENERS__.
-  useEffect(() => {
-    if (!(import.meta as { hot?: unknown }).hot) return;
-    const refetchRoute = () => {
-      staticPathSetRef.current.clear();
-      prefetchCacheRef.current.clear();
-      refetch(encodeRoutePath(route.path), getRscParams(route.query));
-    };
-    const listeners = ((
-      globalThis as { __WAKU_RSC_RELOAD_LISTENERS__?: Array<() => void> }
-    ).__WAKU_RSC_RELOAD_LISTENERS__ ||= []);
-    listeners.unshift(refetchRoute);
-    return () => {
-      const i = listeners.indexOf(refetchRoute);
-      if (i !== -1) listeners.splice(i, 1);
-    };
-  }, [route, refetch, getRscParams]);
+  // Vite HMR (dev only): the replacing no-op retires Root's own listener, which
+  // would refetch the initial route; useHmrRefetch refetches the current one.
+  useEffect(
+    () => registerRscReloadListener(() => {}, { replace: true }),
+    [registerRscReloadListener],
+  );
+  const getSettledRoute = useCallback(() => routeRef.current, []);
+  useHmrRefetch({ getSettledRoute });
   useEffect(() => {
     const callback = (event: NavigateEvent) => {
       if (!event.canIntercept) return;
       if (event.downloadRequest !== null || event.formData) return;
       // React >=19.2's default transition indicator fires fake navigations.
       if (event.info === 'react-transition') return;
-      const nextRoute = parseRoute(new URL(event.destination.url));
+      const destination = new URL(event.destination.url);
+      const nextRoute = parseRoute(destination);
       const info = event.info as { scroll?: boolean } | undefined;
       const source = (event as NavigateEvent & { sourceElement?: Element })
         .sourceElement;
@@ -534,32 +396,19 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
       const suppressScroll = resolvedScroll === false;
       if (event.hashChange) {
         // Hash-only: no refetch; intercept only to suppress the browser scroll.
-        emitRouteEvent('start', nextRoute);
         if (suppressScroll) {
           event.intercept({
             scroll: 'manual',
             handler: async () => {
               setRoute(nextRoute);
-              emitRouteEvent('complete', nextRoute);
             },
           });
         } else {
           setRoute(nextRoute);
-          emitRouteEvent('complete', nextRoute);
         }
         return;
       }
-      emitRouteEvent('start', nextRoute);
       const signal = event.signal;
-      // A clicked <Link>'s unstable_startTransition overrides the commit
-      // transition (View Transitions); its pending is then bypassed.
-      const customTransition = clickedAnchor
-        ? matched.find((e) => e.unstable_startTransition)
-            ?.unstable_startTransition
-        : undefined;
-      const pendingSetters = matched
-        .filter((e) => !e.unstable_startTransition)
-        .map((e) => e.setOptimisticStatus);
       event.intercept({
         ...(suppressScroll ? { scroll: 'manual' as const } : {}),
         handler: () =>
@@ -569,54 +418,47 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
             // React reverts them on commit/abort/error.
             startTransition(async () => {
               try {
-                for (const set of pendingSetters) set({ pending: true });
-                let targetRoute = nextRoute;
-                try {
-                  if (!staticPathSetRef.current.has(nextRoute.path)) {
-                    const rscPath = encodeRoutePath(nextRoute.path);
-                    const cached = prefetchCacheRef.current.get(
-                      prefetchCacheKey(rscPath, nextRoute.query),
-                    );
-                    const prefetched =
-                      cached && cached.expireAt > Date.now()
-                        ? cached.promise
-                        : undefined;
-                    await refetch(
-                      rscPath,
-                      getRscParams(nextRoute.query),
-                      prefetched
-                        ? { unstable_prefetched: prefetched }
-                        : undefined,
-                    );
-                  }
-                  if (signal.aborted) return resolve();
-                } catch (err) {
-                  if (signal.aborted) return resolve();
-                  if (getErrorInfo(err)?.status === 404) {
-                    if (!staticPathSetRef.current.has(NOT_FOUND_PATH)) {
-                      await refetch(
-                        encodeRoutePath(NOT_FOUND_PATH),
-                        getRscParams(''),
-                      );
-                    }
-                    if (signal.aborted) return resolve();
-                    targetRoute = { path: NOT_FOUND_PATH, query: '', hash: '' };
-                  } else {
-                    setRenderError(err);
-                    throw err;
-                  }
+                for (const { setOptimisticStatus } of matched) {
+                  setOptimisticStatus({ pending: true });
                 }
+                const settled = routeRef.current;
+                const base = elementsRef.current;
+                // Reuses a static route or a prefetch, and follows a 404 or
+                // redirect the fetch reports.
+                const outcome = await load(cache, nextRoute, {
+                  signal,
+                  has404: has404FromElements(base),
+                  settled,
+                  base,
+                  url: destination,
+                });
+                if (outcome.type === 'aborted') return resolve();
+                if (outcome.type === 'external') {
+                  window.location.replace(outcome.url.href);
+                  return resolve();
+                }
+                if (outcome.type === 'failed') {
+                  setRenderError(outcome.error);
+                  throw outcome.error;
+                }
+                const targetRoute =
+                  outcome.type === 'loaded'
+                    ? getLandedRoute(outcome)
+                    : outcome.route;
                 // Updates after the first await lose the transition scope
                 // (https://react.dev/reference/react/startTransition#caveats),
-                // so re-wrap the commit; a <Link>'s unstable_startTransition
-                // takes over here.
-                const commitRoute = () => {
+                // so re-wrap the commit.
+                startTransition(() => {
                   setRenderError(null);
+                  if (outcome.type === 'loaded') {
+                    void mergeElements(
+                      buildMergePatch(outcome, elementsRef.current, base, {
+                        settled,
+                      }),
+                    );
+                  }
                   setRoute(targetRoute);
-                };
-                if (customTransition) customTransition(commitRoute);
-                else startTransition(commitRoute);
-                emitRouteEvent('complete', targetRoute);
+                });
                 resolve();
               } catch (err) {
                 reject(err);
@@ -629,30 +471,25 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
     return () => {
       window.navigation.removeEventListener('navigate', callback);
     };
-  }, [refetch, getRscParams, emitRouteEvent]);
-  // Mirror waku's INTERNAL_ServerRouter context shape; only route and
-  // prefetchRoute are used.
-  const notAvailable = (name: string) => () => {
-    throw new Error(`${name} is not available in waku-navigation`);
-  };
+  }, [cache, mergeElements]);
+  // The same RouterHost waku's INTERNAL_ServerRouter provides during SSR, which
+  // the re-exported hooks and useRouter read.
+  const host = useMemo<RouterHost>(
+    () => ({ route, navigate: navigateHost }),
+    [route],
+  );
   const routerCtxValue = useMemo(
-    () => ({
-      route,
-      changeRoute: notAvailable('changeRoute') as never,
-      prefetchRoute,
-      routeChangeEvents,
-      fetchingSlices,
-    }),
-    [route, prefetchRoute, routeChangeEvents, fetchingSlices],
+    () => ({ register, prefetchRoute }),
+    [register, prefetchRoute],
   );
   return (
-    <RouterContext.Provider value={routerCtxValue}>
-      <NavStatusRegistryContext.Provider value={{ register }}>
+    <RouterHostContext.Provider value={host}>
+      <RouterContext.Provider value={routerCtxValue}>
         <Slot id="root">
           <Slot id={getRouteSlotId(route.path)} />
         </Slot>
-      </NavStatusRegistryContext.Provider>
-    </RouterContext.Provider>
+      </RouterContext.Provider>
+    </RouterHostContext.Provider>
   );
 }
 
@@ -664,8 +501,13 @@ export function Router() {
   const initialRoute = parseRoute(
     new URL(window.navigation.currentEntry!.url!),
   );
+  const initialRscPath = encodeRoutePath(initialRoute.path);
+  const initialRscParams = useInitialRscParams(
+    initialRscPath,
+    initialRoute.query,
+  );
   return (
-    <Root initialRscPath={encodeRoutePath(initialRoute.path)}>
+    <Root initialRscPath={initialRscPath} initialRscParams={initialRscParams}>
       <InnerRouter fallbackRoute={initialRoute} />
     </Root>
   );

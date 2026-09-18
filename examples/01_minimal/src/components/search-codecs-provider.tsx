@@ -1,13 +1,13 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { Unstable_SearchCodecsProvider } from 'waku-navigation';
+import { SearchCodecsProvider_UNSTABLE } from 'waku-navigation';
 import { tabCodec } from '../search-codecs.js';
 
 export function SearchCodecs({ children }: { children: ReactNode }) {
   return (
-    <Unstable_SearchCodecsProvider searchCodecs={[tabCodec]}>
+    <SearchCodecsProvider_UNSTABLE searchCodecs={[tabCodec]}>
       {children}
-    </Unstable_SearchCodecsProvider>
+    </SearchCodecsProvider_UNSTABLE>
   );
 }

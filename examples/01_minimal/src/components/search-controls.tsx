@@ -1,6 +1,10 @@
 'use client';
 
-import { useSearch_UNSTABLE, useSetSearch_UNSTABLE } from 'waku-navigation';
+import {
+  Link,
+  useSearch_UNSTABLE,
+  useSetSearch_UNSTABLE,
+} from 'waku-navigation';
 
 export function SearchControls() {
   const search = useSearch_UNSTABLE({ from: '/search' });
@@ -23,6 +27,12 @@ export function SearchControls() {
       >
         Append -x
       </button>
+      <Link
+        to={{ to: '/search', search: { tab: 'pricing' } }}
+        data-testid="search-link-pricing"
+      >
+        Pricing
+      </Link>
     </>
   );
 }
