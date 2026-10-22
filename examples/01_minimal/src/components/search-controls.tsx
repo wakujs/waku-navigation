@@ -5,10 +5,11 @@ import {
   useSearch_UNSTABLE,
   useSetSearch_UNSTABLE,
 } from 'waku-navigation';
+import { searchRoute } from '../routes.js';
 
 export function SearchControls() {
-  const search = useSearch_UNSTABLE({ from: '/search' });
-  const setSearch = useSetSearch_UNSTABLE({ from: '/search' });
+  const search = useSearch_UNSTABLE(searchRoute);
+  const setSearch = useSetSearch_UNSTABLE(searchRoute);
   return (
     <>
       <h1>Search</h1>
@@ -28,7 +29,7 @@ export function SearchControls() {
         Append -x
       </button>
       <Link
-        to={{ to: '/search', search: { tab: 'pricing' } }}
+        to={searchRoute({ search: { tab: 'pricing' } })}
         data-testid="search-link-pricing"
       >
         Pricing

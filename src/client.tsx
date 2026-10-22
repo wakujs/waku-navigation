@@ -1,4 +1,5 @@
 /// <reference types="dom-navigation" />
+/// <reference types="vite/client" />
 
 'use client';
 
@@ -15,59 +16,51 @@ import {
   useOptimistic,
   useRef,
   useState,
-  type AnchorHTMLAttributes,
-  type ReactNode,
-  type Ref,
 } from 'react';
+import type { AnchorHTMLAttributes, ReactNode, Ref } from 'react';
 import { preloadModule } from 'react-dom';
 import {
   Root_UNSTABLE as Root,
   Slot_UNSTABLE as Slot,
-  unstable_addBase as addBase,
   useElementsPromise_UNSTABLE as useElementsPromise,
   useMergeElements_UNSTABLE as useMergeElements,
   useRegisterRscReloadListener_UNSTABLE as useRegisterRscReloadListener,
 } from 'waku/minimal/client';
+import type { LinkProps as WakuLinkProps } from 'waku/router/client';
 import {
   RouterHostContext_UNSTABLE as RouterHostContext,
-  SearchCodecsProvider_UNSTABLE,
   Slice_UNSTABLE as Slice,
   unstable_buildMergePatch as buildMergePatch,
-  unstable_buildRouteHref as buildRouteHref,
   unstable_encodeRoutePath as encodeRoutePath,
   unstable_getRouteFromElements as getRouteFromElements,
   unstable_getRouteSlotId as getRouteSlotId,
   unstable_has404FromElements as has404FromElements,
   unstable_isStaticFromElements as isStaticFromElements,
-  unstable_load as load,
   unstable_parseRoute as parseRoute,
   useHmrRefetch_UNSTABLE as useHmrRefetch,
   useInitialRoute_UNSTABLE as useInitialRoute,
   useInitialRscParams_UNSTABLE as useInitialRscParams,
   useParams_UNSTABLE,
-  useResolveSearchCodec_UNSTABLE as useResolveSearchCodec,
   useRouterCache_UNSTABLE as useRouterCache,
   useSearch_UNSTABLE,
   useSetSearch_UNSTABLE,
-  type Unstable_BuildRouteHrefTarget as BuildRouteHrefTarget,
-  type Unstable_Loaded as Loaded,
-  type Unstable_RouteHref as RouteHref,
-  type Unstable_RoutePath as RoutePath,
-  type Unstable_RouterHost as RouterHost,
+} from 'waku/router/client-core';
+import type {
+  Unstable_Loaded as Loaded,
+  Unstable_RouterHost as RouterHost,
 } from 'waku/router/client-core';
 
-export {
-  SearchCodecsProvider_UNSTABLE,
-  Slice,
-  useParams_UNSTABLE,
-  useSearch_UNSTABLE,
-  useSetSearch_UNSTABLE,
-};
-
-/** @deprecated Use `SearchCodecsProvider_UNSTABLE`. */
-export const Unstable_SearchCodecsProvider = SearchCodecsProvider_UNSTABLE;
+export { Slice, useParams_UNSTABLE, useSearch_UNSTABLE, useSetSearch_UNSTABLE };
 
 type Route = { path: string; query: string; hash: string };
+type NavigationHref = WakuLinkProps['to'];
+
+const addBase = (href: string) => {
+  const base = import.meta.env?.WAKU_CONFIG_BASE_PATH as string | undefined;
+  return base && base !== '/' && href.startsWith('/')
+    ? base.slice(0, -1) + href
+    : href;
+};
 
 const NOT_FOUND_PATH = '/404';
 
@@ -102,13 +95,13 @@ const NavigationStatusContext = createContext<NavigationStatus>({});
 export const useNavigationStatus_UNSTABLE = (): NavigationStatus =>
   useContext(NavigationStatusContext);
 
-/** Props for {@link Link}. Mirrors `waku/router`'s `<Link>`. */
-export type LinkProps<Path extends RoutePath> = {
+/** Typed destinations, prefetch triggers, and native anchor attributes. */
+export type LinkProps = {
   /**
-   * Destination, type-checked against your app's generated routes. Either an
-   * href string or, for a parameterized route, `{ to, params, search, hash }`.
+   * Destination, type-checked against generated routes. Construct parameterized
+   * hrefs with `unstable_createRouteHref` from `waku/router`.
    */
-  to: RouteHref | BuildRouteHrefTarget<Path>;
+  to: NavigationHref;
   children: ReactNode;
   /**
    * Whether to scroll on navigation. `false` keeps the current scroll
@@ -126,9 +119,9 @@ export type LinkProps<Path extends RoutePath> = {
  * A type-safe, prefetching, status-aware link. A plain `<a>` already navigates
  * client-side, so `<Link>` is an enhancement: it adds a type-checked `to`,
  * prefetching, and per-link navigation status (read by descendants via
- * {@link useNavigationStatus_UNSTABLE}). Mirrors `waku/router`'s `<Link>`.
+ * {@link useNavigationStatus_UNSTABLE}).
  */
-export function Link<Path extends RoutePath>({
+export function Link({
   to,
   children,
   scroll,
@@ -136,12 +129,8 @@ export function Link<Path extends RoutePath>({
   unstable_prefetchOnView,
   ref: refProp,
   ...props
-}: LinkProps<Path>) {
-  const base = (import.meta as { env?: { WAKU_CONFIG_BASE_PATH?: string } }).env
-    ?.WAKU_CONFIG_BASE_PATH;
-  const resolveCodec = useResolveSearchCodec();
-  const href = typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
-  const resolvedTo = base ? addBase(href, base) : href;
+}: LinkProps) {
+  const resolvedTo = addBase(to);
   const { register, prefetchRoute } = useContext(RouterContext);
   const [status, setOptimisticStatus] = useOptimistic<NavigationStatus>({});
   const elementRef = useRef<HTMLAnchorElement | null>(null);
@@ -204,17 +193,6 @@ export function Link<Path extends RoutePath>({
 }
 
 type NavigateOptions = { scroll?: boolean };
-type Navigate = {
-  (to: RouteHref, options?: NavigateOptions): Promise<void>;
-  <Path extends RoutePath>(
-    target: BuildRouteHrefTarget<Path>,
-    options?: NavigateOptions,
-  ): Promise<void>;
-};
-type Prefetch = {
-  (to: RouteHref): void;
-  <Path extends RoutePath>(target: BuildRouteHrefTarget<Path>): void;
-};
 /**
  * Imperative router handle: the current `path` / `query` / `hash`, plus
  * `push` / `replace` / `reload` / `back` / `forward` / `prefetch`. Same shape
@@ -223,34 +201,23 @@ type Prefetch = {
 export function useRouter() {
   const host = useContext(RouterHostContext);
   const { prefetchRoute } = useContext(RouterContext);
-  const resolveCodec = useResolveSearchCodec();
   const route: Route = host?.route ?? { path: '/', query: '', hash: '' };
   return {
     path: route.path,
     query: route.query,
     hash: route.hash,
-    push: (async (
-      to: RouteHref | BuildRouteHrefTarget<RoutePath>,
-      options?: NavigateOptions,
-    ) => {
-      const href =
-        typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
-      await window.navigation.navigate(href, {
+    push: async (to: NavigationHref, options?: NavigateOptions) => {
+      await window.navigation.navigate(addBase(to), {
         history: 'push',
         info: { scroll: options?.scroll },
       }).finished;
-    }) as Navigate,
-    replace: (async (
-      to: RouteHref | BuildRouteHrefTarget<RoutePath>,
-      options?: NavigateOptions,
-    ) => {
-      const href =
-        typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
-      await window.navigation.navigate(href, {
+    },
+    replace: async (to: NavigationHref, options?: NavigateOptions) => {
+      await window.navigation.navigate(addBase(to), {
         history: 'replace',
         info: { scroll: options?.scroll },
       }).finished;
-    }) as Navigate,
+    },
     reload: () => window.navigation.reload().finished,
     back: () => {
       window.navigation.back();
@@ -258,11 +225,9 @@ export function useRouter() {
     forward: () => {
       window.navigation.forward();
     },
-    prefetch: ((to: RouteHref | BuildRouteHrefTarget<RoutePath>) => {
-      const href =
-        typeof to === 'string' ? to : buildRouteHref(to, resolveCodec);
-      prefetchRoute(parseRoute(new URL(href, window.location.href)));
-    }) as Prefetch,
+    prefetch: (to: NavigationHref) => {
+      prefetchRoute(parseRoute(new URL(addBase(to), window.location.href)));
+    },
   };
 }
 
@@ -425,12 +390,17 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                 const base = elementsRef.current;
                 // Reuses a static route or a prefetch, and follows a 404 or
                 // redirect the fetch reports.
-                const outcome = await load(cache, nextRoute, {
+                const outcome = await cache.load(nextRoute, {
                   signal,
                   has404: has404FromElements(base),
                   settled,
                   base,
                   url: destination,
+                  onInvalidate: (url) => {
+                    window.navigation.removeEventListener('navigate', callback);
+                    window.history.replaceState(window.history.state, '', url);
+                    window.location.reload();
+                  },
                 });
                 if (outcome.type === 'aborted') return resolve();
                 if (outcome.type === 'external') {

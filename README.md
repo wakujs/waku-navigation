@@ -1,8 +1,8 @@
 # waku-navigation
 
-A drop-in replacement for `waku/router/client` built on the [Navigation API](https://developer.mozilla.org/docs/Web/API/Navigation_API) instead of the History API, on top of Waku's router core (`waku/router/client-core`).
+A client router built on the [Navigation API](https://developer.mozilla.org/docs/Web/API/Navigation_API) and Waku's router core (`waku/router/client-core`).
 
-The entire public surface of `waku/router/client` — including every `unstable_*` feature — has a path to the same behavior with `waku-navigation`. This README walks through every feature and shows what the migration looks like.
+It provides navigation, prefetching, typed params and search, lazy slices, and per-link pending status. See the caveats below for differences from Waku's built-in router.
 
 Because the Navigation API intercepts plain `<a>` clicks, **every `<a>` already navigates client-side — no `<Link>` required.** `<Link>` is still here, as an _enhancement_: it adds a type-safe `to`, prefetching, and per-link navigation status. Reach for `<Link>` when you want those; use a plain `<a>` when you don't.
 
@@ -13,6 +13,8 @@ Because the Navigation API intercepts plain `<a>` clicks, **every `<a>` already 
 ```bash
 npm install waku-navigation
 ```
+
+Requires Waku 1.0.0-rc.4 or later and its React 19.3.1 peers.
 
 ## Quick start
 
@@ -69,22 +71,26 @@ function Nav() {
   // router.path     -- current pathname (no leading base)
   // router.query    -- query string (no leading '?')
   // router.hash     -- '#section' or ''
-  // router.push(to, { scroll? })       -- to: RouteHref | { to, params, search, hash }
-  // router.replace(to, { scroll? })    -- to: RouteHref | { to, params, search, hash }
+  // router.push(to, { scroll? })       -- to: href string or constructed href
+  // router.replace(to, { scroll? })    -- to: href string or constructed href
   // router.reload()
   // router.back()
   // router.forward()
-  // router.prefetch(to)                -- to: RouteHref | { to, params, search, hash }
+  // router.prefetch(to)                -- to: href string or constructed href
 }
 ```
 
 Notes:
 
-- `push` / `replace` / `prefetch` take a type-safe `to` — either an href string (`RouteHref`, checked against your generated routes) or the object form `{ to, params, search, hash }` for a parameterized route, exactly like `waku/router`. The object form is built and URL-encoded with waku's `unstable_buildRouteHref`, which serializes `search` with the route's search codec:
+- `push` / `replace` / `prefetch` accept the same type-safe hrefs as Waku's built-in router. Construct parameterized routes with `unstable_createRouteHref`:
 
   ```tsx
-  push('/about'); // type-checked href
-  push({ to: '/user/[id]', params: { id: 'alice' } }); // -> /user/alice
+  import { unstable_createRouteHref as createRouteHref } from 'waku/router';
+
+  const userRoute = createRouteHref({ path: '/user/[id]' });
+
+  push('/about');
+  push(userRoute({ params: { id: 'alice' } }));
   ```
 
 - `push`/`replace` resolve when the navigation commits (and reject on abort).
@@ -101,19 +107,22 @@ A plain `<a>` already navigates client-side, so `<Link>` is an _enhancement_, no
 
 ```tsx
 import { Link } from 'waku-navigation';
+import { unstable_createRouteHref as createRouteHref } from 'waku/router';
+
+const userRoute = createRouteHref({ path: '/user/[id]' });
 
 <Link to="/slow">
   Slow <NavSpinner />
 </Link>;
 
-// Object form for a parameterized route (built with unstable_buildRouteHref):
-<Link to={{ to: '/user/[id]', params: { id: 'alice' } }}>User alice</Link>;
+<Link to={userRoute({ params: { id: 'alice' } })}>User alice</Link>;
 ```
 
 ```ts
-export type LinkProps<Path extends RoutePath> = {
-  // an href string or, for a parameterized route, { to, params, search, hash }
-  to: RouteHref | BuildRouteHrefTarget<Path>;
+import type { LinkProps as WakuLinkProps } from 'waku/router/client';
+
+export type LinkProps = {
+  to: WakuLinkProps['to'];
   scroll?: boolean; // false keeps scroll position; otherwise browser default
   unstable_prefetchOnEnter?: boolean; // prefetch on pointer enter
   unstable_prefetchOnView?: boolean; // prefetch when scrolled into view
@@ -121,7 +130,7 @@ export type LinkProps<Path extends RoutePath> = {
 } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, 'href'>;
 ```
 
-`<Link>` does not intercept the click itself — the browser fires the navigate event and the router correlates it back to this instance. So modifier-clicks, `target`, `download`, and cross-origin `to` all keep their native behavior (use a plain `<a>` for those anyway). The props mirror `waku/router`'s `<Link>`, so migrating across is an import swap.
+`<Link>` does not intercept the click itself — the browser fires the navigate event and the router correlates it back to this instance. So modifier-clicks, `target`, `download`, and cross-origin `to` all keep their native behavior (use a plain `<a>` for those anyway). It accepts native anchor attributes alongside the routing props above.
 
 To animate navigations with the View Transitions API, wrap the part of the tree you want animated in React's `<ViewTransition>`. The router commits every navigation inside a transition, so React drives the animation — no router prop needed, as in `waku/router`.
 
@@ -165,32 +174,35 @@ function UserId() {
 }
 ```
 
-`useSearch_UNSTABLE` / `useSetSearch_UNSTABLE` read and write typed `?search`, parsed and serialized by the route's **search codec**. Provide codecs once via `SearchCodecsProvider_UNSTABLE` (render it in a client component in your root layout — codecs hold functions, so they can't be passed from a server component), and declare the codec on the route's `getConfig` as `unstable_searchCodec`:
+`useSearch_UNSTABLE` / `useSetSearch_UNSTABLE` read and write typed query params through a local route descriptor. Bind the route pattern and search codec in a shared module:
+
+```tsx
+import { unstable_createRouteHref as createRouteHref } from 'waku/router';
+import { tabCodec } from './search-codecs.js';
+
+export const searchRoute = createRouteHref({
+  path: '/search',
+  search: tabCodec,
+});
+```
+
+Pass that descriptor to the client hooks:
 
 ```tsx
 'use client';
-import {
-  SearchCodecsProvider_UNSTABLE,
-  useSearch_UNSTABLE,
-  useSetSearch_UNSTABLE,
-} from 'waku-navigation';
-import { tabCodec } from '../search-codecs.js';
-
-// in your root layout's client wrapper:
-<SearchCodecsProvider_UNSTABLE searchCodecs={[tabCodec]}>
-  {children}
-</SearchCodecsProvider_UNSTABLE>;
+import { useSearch_UNSTABLE, useSetSearch_UNSTABLE } from 'waku-navigation';
+import { searchRoute } from '../routes.js';
 
 function Tabs() {
-  const search = useSearch_UNSTABLE({ from: '/search' }); // { tab: string } | null
-  const setSearch = useSetSearch_UNSTABLE({ from: '/search' });
+  const search = useSearch_UNSTABLE(searchRoute);
+  const setSearch = useSetSearch_UNSTABLE(searchRoute);
   return (
     <button onClick={() => setSearch({ tab: 'faq' })}>{search?.tab}</button>
   );
 }
 ```
 
-`setSearch` accepts a partial or an updater of the current search and navigates (push by default, or `{ history: 'replace' }`) to the same path, keeping the scroll position unless you pass `{ scroll: true }`. Both are a no-op / `null` when the current path doesn't match `from` or the route has no codec. The codec contract (`Unstable_SearchCodec`) and the typed wiring come from `waku/router`; `examples/01_minimal` has a full `/search` example. `Unstable_SearchCodecsProvider` is kept as a deprecated alias of `SearchCodecsProvider_UNSTABLE`, as in Waku.
+Declare `unstable_searchCodec: searchRoute.searchCodec` in the page's `getConfig` to validate incoming server queries. Codecs implement `parse` and `serialize`; they have no `id` field. `setSearch` accepts a partial or an updater of the current search and navigates with push by default, or `{ history: 'replace' }`. It keeps the scroll position unless `{ scroll: true }` is supplied. For a different path, reading returns `null` and setting is a no-op. See `examples/01_minimal` for a complete example.
 
 ### `<Slice>`
 
@@ -205,9 +217,13 @@ import { Slice } from 'waku-navigation';
 
 ---
 
+## Migration from 0.0.6
+
+Upgrade Waku to 1.0.0-rc.4 and React, React DOM, and React Server DOM Webpack to 19.3.1. Replace object destinations with hrefs constructed by `unstable_createRouteHref`. Pass local route descriptors to the search hooks, and remove `SearchCodecsProvider_UNSTABLE` or its deprecated `Unstable_SearchCodecsProvider` alias. Both exports have been removed with Waku's codec registry.
+
 ## Migration from `waku/router/client`
 
-### Drop-in: `<Router>` and `useRouter`
+### `<Router>` and `useRouter`
 
 ```diff
 - import { Router, useRouter } from 'waku/router/client';
@@ -216,9 +232,9 @@ import { Slice } from 'waku-navigation';
 
 `<Router>` takes no props in `waku-navigation` — there is no `initialRoute` or `unstable_routeInterceptor`. The initial route comes from `window.navigation`.
 
-### `<Link>` (drop-in) or plain `<a>`
+### `<Link>` or plain `<a>`
 
-`<Link>` is a drop-in — same import path swap, same props (`to` as an href string or `{ to, params, search, hash }`, `scroll`, `unstable_prefetchOnEnter`, `unstable_prefetchOnView`, `ref`, and any `<a>` attributes):
+`<Link>` accepts `to` as an href string or constructed href, `scroll`, boolean `unstable_prefetchOnEnter` / `unstable_prefetchOnView` triggers, `ref`, and native anchor attributes:
 
 ```diff
 - import { Link } from 'waku/router/client';
@@ -226,7 +242,7 @@ import { Slice } from 'waku-navigation';
   <Link to="/about">About</Link>
 ```
 
-The one prop not carried over is `unstable_instant` (waku's instant navigation): `waku-navigation` doesn't implement it, so it's absent from `<Link>` and `useRouter().push`/`replace` options.
+Waku's prefetch option objects and `unstable_instant` navigation aren't supported. Use boolean prefetch triggers; `unstable_instant` is absent from `<Link>` and `useRouter().push`/`replace` options.
 
 Or drop `<Link>` entirely where you don't need type-safety, prefetching, or status — a plain `<a>` navigates client-side on its own:
 
@@ -259,7 +275,7 @@ Same import path change as `useRouter`. All props (`id`, `lazy`, `fallback`, chi
 
 ### Typed params & search (drop-in)
 
-`useParams_UNSTABLE`, `useSearch_UNSTABLE`, `useSetSearch_UNSTABLE`, and `SearchCodecsProvider_UNSTABLE` are the same import-path swap — they are the same functions `waku/router/client` exports:
+`useParams_UNSTABLE`, `useSearch_UNSTABLE`, and `useSetSearch_UNSTABLE` are the same import-path swap — they are the same functions `waku/router/client` exports:
 
 ```diff
 - import { useParams_UNSTABLE, useSearch_UNSTABLE } from 'waku/router/client';
@@ -280,7 +296,7 @@ Non-404 refetch failures (network errors, server 5xx) are rethrown during render
 
 ### Lower-level `unstable_*` exports
 
-`waku/router/client` still exports these, but deprecated. Import them from `waku/router/client-core` and `waku/minimal/client` instead:
+Import low-level helpers from `waku/router/client-core` and `waku/minimal/client`:
 
 ```ts
 import {
@@ -293,11 +309,7 @@ import {
   unstable_getSliceSlotId,
   unstable_parseRoute,
 } from 'waku/router/client-core';
-import {
-  unstable_addBase,
-  unstable_getErrorInfo,
-  unstable_removeBase,
-} from 'waku/minimal/client';
+import { unstable_getErrorInfo } from 'waku/minimal/client';
 ```
 
 `unstable_RouterContext` is private to Waku's History API router, and `waku-navigation` doesn't provide it. Read the current route with `useRouter()`, or with `useRouterHost_UNSTABLE` from `waku/router/client-core`.
@@ -330,3 +342,12 @@ These are all handled inside the navigate-event listener so apps usually don't n
 - A redirect thrown while a page renders (`unstable_redirect` in a page component) is not followed; it reaches the nearest error boundary.
 - `unstable_rerenderRoute()` without arguments in a server action throws, because it needs the action-origin header that Waku's History API router sends. Pass the path explicitly: `unstable_rerenderRoute('/path')`. See [wakujs/waku#2306](https://github.com/wakujs/waku/issues/2306).
 - Requires a browser with the Navigation API. There is currently no fallback for older browsers.
+
+## Testing
+
+```sh
+pnpm compile
+pnpm test
+pnpm e2e
+E2E_MODE=production pnpm e2e
+```

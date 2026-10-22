@@ -320,6 +320,63 @@ test('useRouter().prefetch warms the RSC cache so subsequent navigation skips th
   expect(aboutRscUrls.length).toBe(1);
 });
 
+test('an adopted prefetch from a different build reloads the destination document', async ({
+  page,
+}) => {
+  test.skip(
+    process.env.E2E_MODE !== 'production',
+    'Build IDs require a production build',
+  );
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const requestStarted = new Promise<void>((resolve) => {
+    requested = resolve;
+  });
+  let rscRequests = 0;
+  await page.route('**/RSC/R/about*', async (route) => {
+    rscRequests++;
+    const response = await route.fetch();
+    const original = await response.text();
+    expect(original).toMatch(/"_buildId":"[^"]+"/);
+    const body = original.replace(
+      /"_buildId":"[^"]+"/,
+      '"_buildId":"deployed-build"',
+    );
+    requested();
+    await gate;
+    await route.fulfill({ response, body });
+  });
+  try {
+    await page.goto('/');
+    await waitForHydration(page);
+    await page.evaluate(() => {
+      (window as unknown as Record<string, unknown>).__sentinel = true;
+    });
+    await page.getByTestId('prefetch').click();
+    await requestStarted;
+    await page.locator('a', { hasText: 'About' }).click();
+    await expect(page).toHaveURL('/about');
+    await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+    release();
+
+    await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+    expect(rscRequests).toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as Record<string, unknown>).__sentinel,
+        ),
+      )
+      .toBeUndefined();
+    await expect(page).toHaveURL('/about');
+  } finally {
+    release();
+  }
+});
+
 test('useRouter().push with scroll: false preserves the current scroll position', async ({
   page,
 }) => {
@@ -341,6 +398,10 @@ test('useRouter().push with scroll: false preserves the current scroll position'
 test('HMR reload listener clears the static cache and refetches the current route', async ({
   page,
 }) => {
+  test.skip(
+    process.env.E2E_MODE === 'production',
+    'HMR requires development mode',
+  );
   const homeRscUrls: string[] = [];
   page.on('request', (req) => {
     if (req.url().includes('/RSC/R/_root')) homeRscUrls.push(req.url());
@@ -476,19 +537,18 @@ test('client-side 404: navigating to an unknown route renders the 404 page', asy
   await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
 });
 
-test('<Link> object form navigates to a parameterized route', async ({
+test('<Link> accepts a constructed href for a parameterized route', async ({
   page,
 }) => {
   await page.goto('/');
   await waitForHydration(page);
 
-  // to={{ to: '/user/[id]', params: { id: 'alice' } }} builds /user/alice.
   await page.getByTestId('user-link').click();
   await expect(page).toHaveURL('/user/alice');
   await expect(page.getByTestId('user-heading')).toHaveText('User: alice');
 });
 
-test('useRouter().push object form navigates to a parameterized route', async ({
+test('useRouter().push accepts a constructed href for a parameterized route', async ({
   page,
 }) => {
   await page.goto('/');
@@ -499,7 +559,7 @@ test('useRouter().push object form navigates to a parameterized route', async ({
   await expect(page.getByTestId('user-heading')).toHaveText('User: bob');
 });
 
-test('object form URL-encodes param values', async ({ page }) => {
+test('constructed href URL-encodes param values', async ({ page }) => {
   await page.goto('/');
   await waitForHydration(page);
 
@@ -543,7 +603,6 @@ test('useSearch_UNSTABLE / useSetSearch_UNSTABLE read and write typed search', a
   await expect(page).toHaveURL('/search?tab=faq-x');
   await expect(page.getByTestId('search-tab')).toHaveText('tab: faq-x');
 
-  // The <Link> object form serializes `search` with the route's codec.
   await expect(page.getByTestId('search-link-pricing')).toHaveAttribute(
     'href',
     '/search?tab=pricing',
