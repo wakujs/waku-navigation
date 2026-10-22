@@ -341,6 +341,10 @@ test('useRouter().push with scroll: false preserves the current scroll position'
 test('HMR reload listener clears the static cache and refetches the current route', async ({
   page,
 }) => {
+  test.skip(
+    process.env.E2E_MODE === 'production',
+    'HMR requires development mode',
+  );
   const homeRscUrls: string[] = [];
   page.on('request', (req) => {
     if (req.url().includes('/RSC/R/_root')) homeRscUrls.push(req.url());
@@ -476,19 +480,18 @@ test('client-side 404: navigating to an unknown route renders the 404 page', asy
   await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
 });
 
-test('<Link> object form navigates to a parameterized route', async ({
+test('<Link> accepts a constructed href for a parameterized route', async ({
   page,
 }) => {
   await page.goto('/');
   await waitForHydration(page);
 
-  // to={{ to: '/user/[id]', params: { id: 'alice' } }} builds /user/alice.
   await page.getByTestId('user-link').click();
   await expect(page).toHaveURL('/user/alice');
   await expect(page.getByTestId('user-heading')).toHaveText('User: alice');
 });
 
-test('useRouter().push object form navigates to a parameterized route', async ({
+test('useRouter().push accepts a constructed href for a parameterized route', async ({
   page,
 }) => {
   await page.goto('/');
@@ -499,7 +502,7 @@ test('useRouter().push object form navigates to a parameterized route', async ({
   await expect(page.getByTestId('user-heading')).toHaveText('User: bob');
 });
 
-test('object form URL-encodes param values', async ({ page }) => {
+test('constructed href URL-encodes param values', async ({ page }) => {
   await page.goto('/');
   await waitForHydration(page);
 
@@ -543,7 +546,6 @@ test('useSearch_UNSTABLE / useSetSearch_UNSTABLE read and write typed search', a
   await expect(page).toHaveURL('/search?tab=faq-x');
   await expect(page.getByTestId('search-tab')).toHaveText('tab: faq-x');
 
-  // The <Link> object form serializes `search` with the route's codec.
   await expect(page.getByTestId('search-link-pricing')).toHaveAttribute(
     'href',
     '/search?tab=pricing',
