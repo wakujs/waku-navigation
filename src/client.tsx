@@ -55,6 +55,13 @@ export { Slice, useParams_UNSTABLE, useSearch_UNSTABLE, useSetSearch_UNSTABLE };
 type Route = { path: string; query: string; hash: string };
 type NavigationHref = WakuLinkProps['to'];
 
+const addBase = (href: string) => {
+  const base = import.meta.env?.WAKU_CONFIG_BASE_PATH as string | undefined;
+  return base && base !== '/' && href.startsWith('/')
+    ? base.slice(0, -1) + href
+    : href;
+};
+
 const NOT_FOUND_PATH = '/404';
 
 type NavigationStatus = { pending?: boolean };
@@ -123,9 +130,7 @@ export function Link({
   ref: refProp,
   ...props
 }: LinkProps) {
-  const base = import.meta.env?.WAKU_CONFIG_BASE_PATH as string | undefined;
-  const resolvedTo =
-    base && base !== '/' && to.startsWith('/') ? base.slice(0, -1) + to : to;
+  const resolvedTo = addBase(to);
   const { register, prefetchRoute } = useContext(RouterContext);
   const [status, setOptimisticStatus] = useOptimistic<NavigationStatus>({});
   const elementRef = useRef<HTMLAnchorElement | null>(null);
@@ -202,13 +207,13 @@ export function useRouter() {
     query: route.query,
     hash: route.hash,
     push: async (to: NavigationHref, options?: NavigateOptions) => {
-      await window.navigation.navigate(to, {
+      await window.navigation.navigate(addBase(to), {
         history: 'push',
         info: { scroll: options?.scroll },
       }).finished;
     },
     replace: async (to: NavigationHref, options?: NavigateOptions) => {
-      await window.navigation.navigate(to, {
+      await window.navigation.navigate(addBase(to), {
         history: 'replace',
         info: { scroll: options?.scroll },
       }).finished;
@@ -221,7 +226,7 @@ export function useRouter() {
       window.navigation.forward();
     },
     prefetch: (to: NavigationHref) => {
-      prefetchRoute(parseRoute(new URL(to, window.location.href)));
+      prefetchRoute(parseRoute(new URL(addBase(to), window.location.href)));
     },
   };
 }
@@ -391,6 +396,11 @@ function InnerRouter({ fallbackRoute }: { fallbackRoute: Route }) {
                   settled,
                   base,
                   url: destination,
+                  onInvalidate: (url) => {
+                    window.navigation.removeEventListener('navigate', callback);
+                    window.history.replaceState(window.history.state, '', url);
+                    window.location.reload();
+                  },
                 });
                 if (outcome.type === 'aborted') return resolve();
                 if (outcome.type === 'external') {

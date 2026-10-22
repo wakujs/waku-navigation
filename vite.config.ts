@@ -9,6 +9,7 @@ export default defineConfig({
     },
   },
   test: {
+    server: { deps: { inline: ['waku'] } },
     environment: 'happy-dom',
     setupFiles: ['./tests/vitest-setup.ts'],
     include: ['tests/**/*.spec.{ts,tsx}'],

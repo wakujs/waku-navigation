@@ -320,6 +320,63 @@ test('useRouter().prefetch warms the RSC cache so subsequent navigation skips th
   expect(aboutRscUrls.length).toBe(1);
 });
 
+test('an adopted prefetch from a different build reloads the destination document', async ({
+  page,
+}) => {
+  test.skip(
+    process.env.E2E_MODE !== 'production',
+    'Build IDs require a production build',
+  );
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const requestStarted = new Promise<void>((resolve) => {
+    requested = resolve;
+  });
+  let rscRequests = 0;
+  await page.route('**/RSC/R/about*', async (route) => {
+    rscRequests++;
+    const response = await route.fetch();
+    const original = await response.text();
+    expect(original).toMatch(/"_buildId":"[^"]+"/);
+    const body = original.replace(
+      /"_buildId":"[^"]+"/,
+      '"_buildId":"deployed-build"',
+    );
+    requested();
+    await gate;
+    await route.fulfill({ response, body });
+  });
+  try {
+    await page.goto('/');
+    await waitForHydration(page);
+    await page.evaluate(() => {
+      (window as unknown as Record<string, unknown>).__sentinel = true;
+    });
+    await page.getByTestId('prefetch').click();
+    await requestStarted;
+    await page.locator('a', { hasText: 'About' }).click();
+    await expect(page).toHaveURL('/about');
+    await expect(page.locator('h1')).toHaveText('Welcome to the Home Page');
+    release();
+
+    await expect(page.locator('h1')).toHaveText('Welcome to the About Page');
+    expect(rscRequests).toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as Record<string, unknown>).__sentinel,
+        ),
+      )
+      .toBeUndefined();
+    await expect(page).toHaveURL('/about');
+  } finally {
+    release();
+  }
+});
+
 test('useRouter().push with scroll: false preserves the current scroll position', async ({
   page,
 }) => {
