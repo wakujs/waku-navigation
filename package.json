@@ -1,7 +1,7 @@
 {
   "name": "waku-navigation",
   "description": "Waku Router implementation with Navigation API",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "type": "module",
   "author": "Daishi Kato",
   "repository": {
