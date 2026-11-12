@@ -14,7 +14,7 @@ Because the Navigation API intercepts plain `<a>` clicks, **every `<a>` already 
 npm install waku-navigation
 ```
 
-Requires Waku 1.0.0-rc.4 or later and its React 19.3.1 peers.
+Requires Waku 1.0.0-rc.5 or later and its React 19.3.1 peers.
 
 ## Quick start
 
@@ -329,6 +329,9 @@ These are all handled inside the navigate-event listener so apps usually don't n
 - **Abort during transition** — `event.signal` is passed to the fetch, so a fast-clicked second navigation cleanly cancels the first without committing stale state.
 - **React's default transition indicator** — React (≥19.2) fires a fake same-URL navigation tagged `info: 'react-transition'` for every transition, intercepting it to show the browser's native spinner. The router skips these (they aren't route changes), so an unrelated `useTransition` anywhere in your app never triggers a refetch.
 - **404 on the client** — Waku answers a missing route with your `/404` page, and the router renders the route the response names (`ROUTE_ID`), so the slot points at `/404` while the URL still reflects the user's request. A fetch that fails with a 404 is followed to `/404` by Waku's `unstable_load`, and a redirect off the app replaces the document.
+- **Redirects** — a redirect a page requests (`requestRedirect` or `unstable_redirect`) is followed and the address bar moves to where it lands. Redirects and custom-404 follows share Waku's per-navigation budget; a loop or a chain that runs out stops with an error at the nearest error boundary. A redirect that resolves later, inside a Suspense boundary, is followed only if no newer navigation or fragment change has happened since.
+- **Server functions** — responses from server functions go through Waku's server function routing: `requestRefresh()` and `unstable_rerenderRoute()` update the page they were called from, a response for another route navigates there, and a redirect is followed. A navigation that starts later wins over an older one still loading.
+- **Scrolling** — a push or replace scrolls to the fragment's target once the destination commits, or to the top when there is no target. Back/forward keep the browser's scroll restoration.
 - **Static route cache** — routes with `getConfig({ render: 'static' })` are recorded in Waku's router cache (`useRouterCache_UNSTABLE`) after their first fetch; revisits skip the refetch entirely (the RSC payload is already in Waku's store).
 - **`X-Waku-Etags` header** — every refetch sends the etags of elements already in the store so the server can skip re-rendering shared layouts/slices whose etag still matches. Waku's `unstable_load` fetches with the current elements as its base and sets the header itself, so the router gets this for free.
 - **HMR cache invalidation** — on a Vite RSC update, Waku's `useHmrRefetch_UNSTABLE` clears the router cache and refetches the current route (not the route the page first loaded). Dev only.
@@ -339,8 +342,6 @@ These are all handled inside the navigate-event listener so apps usually don't n
 
 - `<Link>` is an enhancement over plain `<a>`, not a requirement: a plain `<a>` navigates client-side on its own; `<Link>` adds a type-safe `to`, prefetching, and per-link navigation status via `useNavigationStatus_UNSTABLE()`.
 - `unstable_routeInterceptor` (Waku's hook for rewriting back/forward navigations) is not supported.
-- A redirect thrown while a page renders (`unstable_redirect` in a page component) is not followed; it reaches the nearest error boundary.
-- `unstable_rerenderRoute()` without arguments in a server action throws, because it needs the action-origin header that Waku's History API router sends. Pass the path explicitly: `unstable_rerenderRoute('/path')`. See [wakujs/waku#2306](https://github.com/wakujs/waku/issues/2306).
 - Requires a browser with the Navigation API. There is currently no fallback for older browsers.
 
 ## Testing
